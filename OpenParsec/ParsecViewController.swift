@@ -1,15 +1,24 @@
 import Foundation
 import UIKit
 import ParsecSDK
+import Metal
 
 protocol ParsecPlayground {
 	init(viewController: UIViewController, updateImage: @escaping () -> Void)
 	func viewDidLoad()
 	func cleanUp()
 	func updateSize(width: CGFloat, height: CGFloat)
+	func updateRenderScale(_ zoomScale: CGFloat)
 }
 
 class ParsecViewController: UIViewController, UIScrollViewDelegate {
+	private enum TwoFingerGestureMode {
+		case undecided
+		case remoteScroll
+		case zoom
+		case viewportPan
+	}
+
 	var glkView: ParsecPlayground!
 	var gamePadController: GamepadController!
 	var touchController: TouchController!
@@ -19,12 +28,20 @@ class ParsecViewController: UIViewController, UIScrollViewDelegate {
     var lastMouseY: Int32 = -1
     var lastCursorHidden: Bool = false
 	var isPinching = false
-	var zoomEnabled = false
+	var zoomEnabled = true
 	var lastLongPressPoint: CGPoint = CGPoint()
 	var accumulatedDeltaX: Float = 0.0
 	var accumulatedDeltaY: Float = 0.0
 	var lastPanLocation: CGPoint = .zero
 	var lastPanTranslation: CGPoint = .zero
+	var lastScrollTranslation: CGPoint = .zero
+	var isRemoteDragging = false
+	var dragLocked = false
+	private var twoFingerGestureMode: TwoFingerGestureMode = .undecided
+	private weak var threeFingerScrollGestureRecognizer: UIPanGestureRecognizer?
+	private var scrollRemainder: CGPoint = .zero
+	private var scrollMomentumVelocity: CGPoint = .zero
+	private var scrollMomentumTimer: Timer?
 
 	var mouseSensitivity: Float = Float(SettingsHandler.mouseSensitivity)
 	var activatedPanFingerNumber: Int = 0
@@ -33,6 +50,8 @@ class ParsecViewController: UIViewController, UIScrollViewDelegate {
 	var keyboardHeight: CGFloat = 0.0
 	var keyboardVisible: Bool = false
 	var onKeyboardVisibilityChanged: ((Bool) -> Void)?
+	var onZoomScaleChanged: ((CGFloat) -> Void)?
+	private var pinchFocusPoint: CGPoint?
 	var scrollView: UIScrollView!
 	var contentView: UIView!
 
@@ -47,7 +66,11 @@ class ParsecViewController: UIViewController, UIScrollViewDelegate {
 	init() {
 		super.init(nibName: nil, bundle: nil)
 
-		self.glkView = ParsecGLKViewController(viewController: self, updateImage: updateImage)
+		if RendererCompatibility.effectiveRenderer == .metal, MTLCreateSystemDefaultDevice() != nil {
+			self.glkView = ParsecMetalViewController(viewController: self, updateImage: updateImage)
+		} else {
+			self.glkView = ParsecGLKViewController(viewController: self, updateImage: updateImage)
+		}
 
 		self.gamePadController = GamepadController(viewController: self)
 		self.touchController = TouchController(viewController: self)
@@ -90,7 +113,7 @@ class ParsecViewController: UIViewController, UIScrollViewDelegate {
 
 			// Check bounds and pan if needed
 			// Only pan if we are zoomed in OR if the keyboard is visible (to allow scrolling up)
-			if scrollView.zoomScale > 1.0 || (keyboardVisible && scrollView.contentInset.bottom > 0) {
+			if scrollView.zoomScale > 1.0 || isRemoteDragging || (keyboardVisible && scrollView.contentInset.bottom > 0) {
 				let margin: CGFloat = 50.0
 
                 // Convert cursor frame to screen coordinates (relative to the ViewController's view)
@@ -166,8 +189,12 @@ class ParsecViewController: UIViewController, UIScrollViewDelegate {
 		scrollView.delegate = self
 		scrollView.minimumZoomScale = 1.0
 		scrollView.maximumZoomScale = 5.0
+		scrollView.bouncesZoom = true
+		scrollView.decelerationRate = .fast
+		scrollView.isDirectionalLockEnabled = true
 		scrollView.autoresizingMask = [.flexibleWidth, .flexibleHeight]
 		scrollView.panGestureRecognizer.minimumNumberOfTouches = 2
+		scrollView.panGestureRecognizer.maximumNumberOfTouches = 2
         /*
          We set minimumNumberOfTouches to 2 for the scroll view's pan gesture
          so that 1-finger drags are passed through to our custom gesture recognizers
@@ -189,6 +216,9 @@ class ParsecViewController: UIViewController, UIScrollViewDelegate {
 		if let parsecGLK = glkView as? ParsecGLKViewController {
 			parsecGLK.glkView.removeFromSuperview()
 			contentView.addSubview(parsecGLK.glkView)
+		} else if let parsecMetal = glkView as? ParsecMetalViewController {
+			parsecMetal.metalView.removeFromSuperview()
+			contentView.addSubview(parsecMetal.metalView)
 		} else {
 			// Fallback if type check fails, try to find the last subview added?
 			// Assumption: glkView.viewDidLoad() adds a subview.
@@ -198,6 +228,9 @@ class ParsecViewController: UIViewController, UIScrollViewDelegate {
 			if let parsecGLK = glkView as? ParsecGLKViewController,
 			   let eaglContext = parsecGLK.eaglContext {
 				PictureInPictureManager.shared.setup(sourceView: view, glContext: eaglContext, glkViewController: parsecGLK.glkViewController)
+			} else if let parsecMetal = glkView as? ParsecMetalViewController,
+					  let device = parsecMetal.metalView.device {
+				PictureInPictureManager.shared.setup(sourceView: view, metalDevice: device)
 			}
 		}
 
@@ -217,10 +250,20 @@ class ParsecViewController: UIViewController, UIScrollViewDelegate {
 
 		let panGestureRecognizer = UIPanGestureRecognizer(target: self, action: #selector(self.handlePanGesture(_:)))
 		panGestureRecognizer.delegate = self
+		panGestureRecognizer.minimumNumberOfTouches = 1
+		panGestureRecognizer.maximumNumberOfTouches = 2
 		// Important: Allow our pan gesture to work alongside scrollview's?
 		// No, we want 1 finger for this pan, 2 fingers for scrollview.
 		// So they are distinct by touch count.
 		view.addGestureRecognizer(panGestureRecognizer)
+
+		let threeFingerScroll = UIPanGestureRecognizer(target: self, action: #selector(handleThreeFingerRemoteScroll(_:)))
+		threeFingerScroll.delegate = self
+		threeFingerScroll.minimumNumberOfTouches = 3
+		threeFingerScroll.maximumNumberOfTouches = 3
+		threeFingerScroll.allowedTouchTypes = [NSNumber(value: UITouch.TouchType.direct.rawValue)]
+		view.addGestureRecognizer(threeFingerScroll)
+		threeFingerScrollGestureRecognizer = threeFingerScroll
 
 		// Remove custom Pinch logic, ScrollView handles it.
 		// But we might want to know isPinching status?
@@ -231,6 +274,13 @@ class ParsecViewController: UIViewController, UIScrollViewDelegate {
 		singleFingerTapGestureRecognizer.numberOfTouchesRequired = 1
 		singleFingerTapGestureRecognizer.allowedTouchTypes = [0, 2]
 		view.addGestureRecognizer(singleFingerTapGestureRecognizer)
+
+		let doubleTapGestureRecognizer = UITapGestureRecognizer(target: self, action: #selector(handleDoubleTap(_:)))
+		doubleTapGestureRecognizer.numberOfTouchesRequired = 1
+		doubleTapGestureRecognizer.numberOfTapsRequired = 2
+		doubleTapGestureRecognizer.allowedTouchTypes = [0, 2]
+		view.addGestureRecognizer(doubleTapGestureRecognizer)
+		singleFingerTapGestureRecognizer.require(toFail: doubleTapGestureRecognizer)
 
 		// Add tap gesture recognizer for two-finger touch
 		let twoFingerTapGestureRecognizer = UITapGestureRecognizer(target: self, action: #selector(handleTwoFingerTap(_:)))
@@ -244,6 +294,21 @@ class ParsecViewController: UIViewController, UIScrollViewDelegate {
 		threeFingerTapGestureRecognizer.numberOfTouchesRequired = 3
 		threeFingerTapGestureRecognizer.allowedTouchTypes = [0]
 		view.addGestureRecognizer(threeFingerTapGestureRecognizer)
+
+		for direction in [UISwipeGestureRecognizer.Direction.left, .right] {
+			let swipe = UISwipeGestureRecognizer(target: self, action: #selector(handleThreeFingerDisplaySwipe(_:)))
+			swipe.direction = direction
+			swipe.numberOfTouchesRequired = 3
+			view.addGestureRecognizer(swipe)
+		}
+
+		let pencilInteraction = UIPencilInteraction()
+		pencilInteraction.delegate = self
+		view.addInteraction(pencilInteraction)
+
+		let pencilHover = UIHoverGestureRecognizer(target: self, action: #selector(handlePencilHover(_:)))
+		pencilHover.allowedTouchTypes = [NSNumber(value: UITouch.TouchType.pencil.rawValue)]
+		view.addGestureRecognizer(pencilHover)
 
 		let longPressGestureRecognizer = UILongPressGestureRecognizer(target: self, action: #selector(handleLongPress(_:)))
 		longPressGestureRecognizer.numberOfTouchesRequired = 1
@@ -280,11 +345,14 @@ class ParsecViewController: UIViewController, UIScrollViewDelegate {
 		scrollView.contentSize = CGSize(width: w, height: h)
 		CParsec.setFrame(w, h, UIScreen.main.scale)
 
-        // Reset accessory view to ensure correct width in new orientation
-        keyboardAccessoriesView = nil
-        if keyboardVisible {
-            reloadInputViews()
-        }
+		// Rebuild after the transition finishes, when UIWindow safe-area insets
+		// reflect the Dynamic Island's new edge.
+		coordinator.animate(alongsideTransition: nil) { _ in
+			self.keyboardAccessoriesView = nil
+			if self.keyboardVisible {
+				self.reloadInputViews()
+			}
+		}
 	}
 
 	override func viewDidAppear(_ animated: Bool) {
@@ -296,7 +364,7 @@ class ParsecViewController: UIViewController, UIScrollViewDelegate {
 		if keyboardVisible {
 			becomeFirstResponder()
 		}
-		scrollView.pinchGestureRecognizer?.isEnabled = zoomEnabled
+		scrollView.pinchGestureRecognizer?.isEnabled = true
 	}
 
 	override func viewWillDisappear(_ animated: Bool) {
@@ -318,6 +386,11 @@ class ParsecViewController: UIViewController, UIScrollViewDelegate {
 	override func pressesBegan(_ presses: Set<UIPress>, with event: UIPressesEvent?) {
 		for press in presses {
 			guard let key = press.key else { continue }
+
+			if let remapped = remappedModifier(for: key.keyCode) {
+				CParsec.sendKeyboardMessage(keyCode: remapped, pressed: true)
+				continue
+			}
 
 			if key.keyCode == .keyboardLeftAlt || key.keyCode == .keyboardRightAlt {
 				altKeyHeld = true
@@ -346,6 +419,11 @@ class ParsecViewController: UIViewController, UIScrollViewDelegate {
 	override func pressesEnded(_ presses: Set<UIPress>, with event: UIPressesEvent?) {
 		for press in presses {
 			guard let key = press.key else { continue }
+
+			if let remapped = remappedModifier(for: key.keyCode) {
+				CParsec.sendKeyboardMessage(keyCode: remapped, pressed: false)
+				continue
+			}
 
 			if optCmdRemapActive {
 				if key.keyCode == .keyboardLeftAlt || key.keyCode == .keyboardRightAlt {
@@ -406,6 +484,17 @@ class ParsecViewController: UIViewController, UIScrollViewDelegate {
 		}
 	}
 
+	private func remappedModifier(for keyCode: UIKeyboardHIDUsage) -> UInt32? {
+		guard SettingsHandler.swapCommandControl else { return nil }
+		switch keyCode {
+		case .keyboardLeftGUI: return 224
+		case .keyboardRightGUI: return 228
+		case .keyboardLeftControl: return 227
+		case .keyboardRightControl: return 231
+		default: return nil
+		}
+	}
+
 	@objc func keyboardWillShow(notification: NSNotification) {
 		if let keyboardFrame = (notification.userInfo?[UIResponder.keyboardFrameEndUserInfoKey] as? NSValue)?.cgRectValue {
             let height = keyboardFrame.height
@@ -459,6 +548,18 @@ extension ParsecViewController: UIGestureRecognizerDelegate {
 		return true
 	}
 
+	func gestureRecognizerShouldBegin(_ gestureRecognizer: UIGestureRecognizer) -> Bool {
+		guard gestureRecognizer === threeFingerScrollGestureRecognizer,
+			  let pan = gestureRecognizer as? UIPanGestureRecognizer else {
+			return true
+		}
+
+		// Leave deliberate horizontal three-finger swipes available for display
+		// switching. Vertical and diagonal movement remains remote scrolling.
+		let velocity = pan.velocity(in: view)
+		return abs(velocity.y) >= abs(velocity.x) * 0.7
+	}
+
 	@objc func handlePinchGesture(_ gestureRecognizer: UIPinchGestureRecognizer) {
 		// Pinch is handled by UIScrollView
 	}
@@ -468,37 +569,69 @@ extension ParsecViewController: UIGestureRecognizerDelegate {
 		// lock activatedPanFingerNumber in case user not releasing both finger at the same time
 		if gestureRecognizer.numberOfTouches == 0 {
 			if gestureRecognizer.state == .ended || gestureRecognizer.state == .cancelled {
+				let completedFingerCount = activatedPanFingerNumber
+				let completedMode = twoFingerGestureMode
+				let endingVelocity = gestureRecognizer.velocity(in: gestureRecognizer.view)
 				activatedPanFingerNumber = 0
 				// Reset accumulators
 				accumulatedDeltaX = 0.0
 				accumulatedDeltaY = 0.0
 				lastPanTranslation = .zero
+				lastScrollTranslation = .zero
+				twoFingerGestureMode = .undecided
+
+				if completedFingerCount == 2 && completedMode == .remoteScroll &&
+					gestureRecognizer.state == .ended {
+					startRemoteScrollMomentum(velocity: endingVelocity)
+				}
 
 				if SettingsHandler.cursorMode == .direct {
 					let button = ParsecMouseButton.init(rawValue: 1)
 					CParsec.sendMouseClickMessage(button, false)
 				}
+				if isRemoteDragging && !SettingsHandler.dragLock {
+					CParsec.sendMouseClickMessage(ParsecMouseButton(rawValue: 1), false)
+					isRemoteDragging = false
+					dragLocked = false
+					UIImpactFeedbackGenerator(style: .light).impactOccurred()
+				}
 			}
 		} else if activatedPanFingerNumber == 2 || (gestureRecognizer.numberOfTouches == 2 && activatedPanFingerNumber == 0) {
-            // Native UIScrollView handles 2-finger pan for scrolling.
-            // We disable the mouse wheel for now to avoid conflict, or we can check gesture state.
-            // If user wants wheel, we might need a specific mode or 3 fingers.
-			if zoomEnabled {
-				return
-			}
 			activatedPanFingerNumber = 2
-			let velocity = gestureRecognizer.velocity(in: gestureRecognizer.view)
+			let translation = gestureRecognizer.translation(in: gestureRecognizer.view)
+			if gestureRecognizer.state == .began {
+				cancelRemoteScrollMomentum()
+				lastScrollTranslation = .zero
+				twoFingerGestureMode = scrollView.zoomScale > 1.01 ? .viewportPan : .undecided
+			}
 
-			if abs(velocity.y) > 2 {
-				// Run your function when the user uses two fingers and swipes upwards
-				CParsec.sendWheelMsg(x: 0, y: Int32(Float(velocity.y) / 20 * mouseSensitivity))
+			if twoFingerGestureMode == .undecided {
+				let pinchScale = scrollView.pinchGestureRecognizer?.scale ?? 1
+				if abs(pinchScale - 1) > 0.025 {
+					twoFingerGestureMode = .zoom
+				} else if hypot(translation.x, translation.y) > 6 {
+					twoFingerGestureMode = .remoteScroll
+				}
+			}
+
+			guard twoFingerGestureMode == .remoteScroll else {
+				lastScrollTranslation = translation
 				return
 			}
-			if SettingsHandler.cursorMode == .direct {
-				let location = gestureRecognizer.location(in: gestureRecognizer.view)
-				touchController.onTouch(typeOfTap: 1, location: location, state: gestureRecognizer.state)
+
+			let delta = CGPoint(
+				x: translation.x - lastScrollTranslation.x,
+				y: translation.y - lastScrollTranslation.y
+			)
+			lastScrollTranslation = translation
+			if abs(delta.x) > 0.2 || abs(delta.y) > 0.2 {
+				sendRemoteScroll(delta: delta)
+				return
 			}
 		} else if activatedPanFingerNumber == 1 || (gestureRecognizer.numberOfTouches == 1 && activatedPanFingerNumber == 0) {
+			if gestureRecognizer.state == .began {
+				cancelRemoteScrollMomentum()
+			}
 			activatedPanFingerNumber = 1
 			// move mouse
 			if SettingsHandler.cursorMode == .direct {
@@ -518,8 +651,10 @@ extension ParsecViewController: UIGestureRecognizerDelegate {
 				}
 
 				// Calculate delta since last update
-				let deltaX = Float(currentTranslation.x - lastPanTranslation.x) * mouseSensitivity
-				let deltaY = Float(currentTranslation.y - lastPanTranslation.y) * mouseSensitivity
+				let rawX = Float(currentTranslation.x - lastPanTranslation.x)
+				let rawY = Float(currentTranslation.y - lastPanTranslation.y)
+				let deltaX = accelerated(rawX) * mouseSensitivity
+				let deltaY = accelerated(rawY) * mouseSensitivity
 
 				lastPanTranslation = currentTranslation
 
@@ -546,11 +681,105 @@ extension ParsecViewController: UIGestureRecognizerDelegate {
 		}
 	}
 
+	@objc private func handleThreeFingerRemoteScroll(_ gestureRecognizer: UIPanGestureRecognizer) {
+		let translation = gestureRecognizer.translation(in: view)
+
+		switch gestureRecognizer.state {
+		case .began:
+			cancelRemoteScrollMomentum()
+			lastScrollTranslation = .zero
+		case .changed:
+			let delta = CGPoint(
+				x: translation.x - lastScrollTranslation.x,
+				y: translation.y - lastScrollTranslation.y
+			)
+			lastScrollTranslation = translation
+			sendRemoteScroll(delta: delta)
+		case .ended:
+			startRemoteScrollMomentum(velocity: gestureRecognizer.velocity(in: view))
+			lastScrollTranslation = .zero
+		case .cancelled, .failed:
+			lastScrollTranslation = .zero
+		default:
+			break
+		}
+	}
+
+	private func sendRemoteScroll(delta: CGPoint) {
+		let direction: CGFloat = SettingsHandler.naturalScrolling ? 1 : -1
+		let multiplier = 12 * CGFloat(mouseSensitivity) * direction
+		let scaled = CGPoint(
+			x: delta.x * multiplier + scrollRemainder.x,
+			y: delta.y * multiplier + scrollRemainder.y
+		)
+		let wheelX = Int32(scaled.x.rounded(.towardZero))
+		let wheelY = Int32(scaled.y.rounded(.towardZero))
+		scrollRemainder = CGPoint(
+			x: scaled.x - CGFloat(wheelX),
+			y: scaled.y - CGFloat(wheelY)
+		)
+
+		if wheelX != 0 || wheelY != 0 {
+			CParsec.sendWheelMsg(x: wheelX, y: wheelY)
+		}
+	}
+
+	private func startRemoteScrollMomentum(velocity: CGPoint) {
+		cancelRemoteScrollMomentum()
+		guard hypot(velocity.x, velocity.y) > 80 else { return }
+		scrollMomentumVelocity = velocity
+
+		scrollMomentumTimer = Timer.scheduledTimer(withTimeInterval: 1.0 / 60.0, repeats: true) { [weak self] timer in
+			guard let self else {
+				timer.invalidate()
+				return
+			}
+
+			self.sendRemoteScroll(delta: CGPoint(
+				x: self.scrollMomentumVelocity.x / 60,
+				y: self.scrollMomentumVelocity.y / 60
+			))
+			self.scrollMomentumVelocity.x *= 0.91
+			self.scrollMomentumVelocity.y *= 0.91
+
+			if hypot(self.scrollMomentumVelocity.x, self.scrollMomentumVelocity.y) < 24 {
+				self.cancelRemoteScrollMomentum()
+			}
+		}
+	}
+
+	private func cancelRemoteScrollMomentum() {
+		scrollMomentumTimer?.invalidate()
+		scrollMomentumTimer = nil
+		scrollMomentumVelocity = .zero
+	}
+
 	@objc func handleSingleFingerTap(_ gestureRecognizer: UITapGestureRecognizer) {
+		if dragLocked {
+			dragLocked = false
+			isRemoteDragging = false
+			CParsec.sendMouseClickMessage(ParsecMouseButton(rawValue: 1), false)
+			UIImpactFeedbackGenerator(style: .light).impactOccurred()
+			return
+		}
 
 		let location = gestureRecognizer.location(in: gestureRecognizer.view)
 		let adjustedLocation = contentView.convert(location, from: view)
 		touchController.onTap(typeOfTap: 1, location: adjustedLocation)
+	}
+
+	@objc func handleDoubleTap(_ gestureRecognizer: UITapGestureRecognizer) {
+		guard SettingsHandler.doubleTapToDrag else {
+			handleSingleFingerTap(gestureRecognizer)
+			handleSingleFingerTap(gestureRecognizer)
+			return
+		}
+		let location = contentView.convert(gestureRecognizer.location(in: view), from: view)
+		CParsec.sendMousePosition(Int32(location.x), Int32(location.y))
+		CParsec.sendMouseClickMessage(ParsecMouseButton(rawValue: 1), true)
+		isRemoteDragging = true
+		dragLocked = true
+		UIImpactFeedbackGenerator(style: .medium).impactOccurred()
 	}
 
 	@objc func handleTwoFingerTap(_ gestureRecognizer: UITapGestureRecognizer) {
@@ -573,6 +802,21 @@ extension ParsecViewController: UIGestureRecognizerDelegate {
 		showKeyboard()
 	}
 
+	@objc func handleThreeFingerDisplaySwipe(_ gestureRecognizer: UISwipeGestureRecognizer) {
+		NotificationCenter.default.post(
+			name: .parsecCycleDisplay,
+			object: nil,
+			userInfo: ["direction": gestureRecognizer.direction == .left ? 1 : -1]
+		)
+		UISelectionFeedbackGenerator().selectionChanged()
+	}
+
+	@objc func handlePencilHover(_ gestureRecognizer: UIHoverGestureRecognizer) {
+		guard gestureRecognizer.state == .began || gestureRecognizer.state == .changed else { return }
+		let location = contentView.convert(gestureRecognizer.location(in: view), from: view)
+		CParsec.sendMousePosition(Int32(location.x), Int32(location.y))
+	}
+
 	@objc func handleLongPress(_ gestureRecognizer: UIGestureRecognizer) {
 		if SettingsHandler.cursorMode != .touchpad {
 			return
@@ -580,11 +824,15 @@ extension ParsecViewController: UIGestureRecognizerDelegate {
 		let button = ParsecMouseButton.init(rawValue: 1)
 
 		if gestureRecognizer.state == .began {
+			isRemoteDragging = true
+			UIImpactFeedbackGenerator(style: .medium).impactOccurred()
 			CParsec.sendMouseClickMessage(button, true)
 			let location = gestureRecognizer.location(in: gestureRecognizer.view)
 			lastLongPressPoint = contentView.convert(location, from: view)
 		} else if gestureRecognizer.state == .ended {
 			CParsec.sendMouseClickMessage(button, false)
+			isRemoteDragging = false
+			UIImpactFeedbackGenerator(style: .light).impactOccurred()
 		} else if gestureRecognizer.state == .changed {
 			let newLocation = gestureRecognizer.location(in: gestureRecognizer.view)
             let adjustedNewLocation = contentView.convert(newLocation, from: view)
@@ -596,18 +844,71 @@ extension ParsecViewController: UIGestureRecognizerDelegate {
 		}
 	}
 
+	private func accelerated(_ value: Float) -> Float {
+		switch SettingsHandler.pointerAcceleration {
+		case .linear:
+			return value
+		case .adaptive:
+			let factor = min(2.2, 1 + abs(value) / 18)
+			return value * factor
+		case .fast:
+			let factor = min(3.2, 1.35 + abs(value) / 12)
+			return value * factor
+		}
+	}
+
     // UIScrollViewDelegate
 	func viewForZooming(in scrollView: UIScrollView) -> UIView? {
 		return contentView
 	}
 
 	func scrollViewDidZoom(_ scrollView: UIScrollView) {
-		// Update isPinching if needed, or other logic
+		let scale = max(scrollView.zoomScale, 1)
+		glkView.updateRenderScale(scale)
+		onZoomScaleChanged?(scale)
+
+		if let pinch = scrollView.pinchGestureRecognizer,
+		   pinch.state == .began || pinch.state == .changed {
+			let focus = pinch.location(in: contentView)
+			pinchFocusPoint = focus
+			CParsec.sendMousePosition(Int32(focus.x), Int32(focus.y))
+		}
+	}
+
+	func scrollViewWillBeginZooming(_ scrollView: UIScrollView, with view: UIView?) {
+		cancelRemoteScrollMomentum()
+		twoFingerGestureMode = .zoom
+		guard let pinch = scrollView.pinchGestureRecognizer else { return }
+		let focus = pinch.location(in: contentView)
+		pinchFocusPoint = focus
+		CParsec.sendMousePosition(Int32(focus.x), Int32(focus.y))
+	}
+
+	func scrollViewDidEndZooming(_ scrollView: UIScrollView, with view: UIView?, atScale scale: CGFloat) {
+		guard let focus = pinchFocusPoint else { return }
+		CParsec.sendMousePosition(Int32(focus.x), Int32(focus.y))
+
+		let target = CGPoint(
+			x: focus.x * scale - scrollView.bounds.width / 2,
+			y: focus.y * scale - scrollView.bounds.height / 2
+		)
+		let maximum = CGPoint(
+			x: max(scrollView.contentSize.width - scrollView.bounds.width, 0),
+			y: max(scrollView.contentSize.height - scrollView.bounds.height, 0)
+		)
+		let clamped = CGPoint(
+			x: min(max(target.x, 0), maximum.x),
+			y: min(max(target.y, 0), maximum.y)
+		)
+		scrollView.setContentOffset(clamped, animated: true)
+		onZoomScaleChanged?(scale)
 	}
 
 	func setZoomEnabled(_ enabled: Bool) {
-		zoomEnabled = enabled
-		scrollView.pinchGestureRecognizer?.isEnabled = enabled
+		// Pinch-to-zoom is a core touch interaction and must remain available.
+		// Keep the parameter for compatibility with the session controller API.
+		zoomEnabled = true
+		scrollView.pinchGestureRecognizer?.isEnabled = true
 	}
 
 }
@@ -627,6 +928,18 @@ extension ParsecViewController: UIPointerInteractionDelegate {
 		return nil
 	}
 
+}
+
+extension ParsecViewController: UIPencilInteractionDelegate {
+	func pencilInteractionDidTap(_ interaction: UIPencilInteraction) {
+		CParsec.sendMouseClickMessage(ParsecMouseButton(rawValue: 3), true)
+		CParsec.sendMouseClickMessage(ParsecMouseButton(rawValue: 3), false)
+		UIImpactFeedbackGenerator(style: .light).impactOccurred()
+	}
+}
+
+extension Notification.Name {
+	static let parsecCycleDisplay = Notification.Name("OpenParsec.CycleDisplay")
 }
 
 class KeyboardButton: UIButton {
@@ -680,7 +993,11 @@ extension ParsecViewController: UIKeyInput, UITextInputTraits {
 	}
 
 	func insertText(_ text: String) {
-		CParsec.sendVirtualKeyboardInput(text: text)
+		// iOS may deliver QuickType/autocorrect text as a multi-character
+		// insertion. The Parsec input API accepts one HID key at a time.
+		for character in text {
+			CParsec.sendVirtualKeyboardInput(text: String(character))
+		}
 	}
 
 	func deleteBackward() {
@@ -700,11 +1017,19 @@ extension ParsecViewController: UIKeyInput, UITextInputTraits {
         containerView.backgroundColor = .clear
 
 		// Use a simple UIView instead of UIToolbar to avoid constraint conflicts
+		let windowInsets = view.window?.safeAreaInsets ?? .zero
+		let safeLeft = max(view.safeAreaInsets.left, windowInsets.left, 8)
+		let safeRight = max(view.safeAreaInsets.right, windowInsets.right, 8)
 		let toolbarBackground = UIView(frame: CGRect(x: 0, y: 50, width: containerView.bounds.width, height: 44))
 		toolbarBackground.autoresizingMask = [.flexibleWidth, .flexibleTopMargin]
 		toolbarBackground.backgroundColor = UIColor.systemBackground.withAlphaComponent(0.9)
 
-		let scrollView = UIScrollView(frame: CGRect(x: 8, y: 0, width: toolbarBackground.bounds.width - 80, height: 44))
+		let scrollView = UIScrollView(frame: CGRect(
+			x: safeLeft,
+			y: 0,
+			width: max(toolbarBackground.bounds.width - safeLeft - safeRight - 70, 120),
+			height: 44
+		))
 		scrollView.autoresizingMask = [.flexibleWidth]
 		scrollView.showsHorizontalScrollIndicator = false
 
@@ -722,24 +1047,13 @@ extension ParsecViewController: UIKeyInput, UITextInputTraits {
 		let controlBarButton = createKeyboardButton(displayText: "⌃", keyText: "CONTROL", isToggleable: true)
 		let altBarButton = createKeyboardButton(displayText: "⌥", keyText: "LALT", isToggleable: true)
 		let deleteBarButton = createKeyboardButton(displayText: "Del", keyText: "DELETE", isToggleable: false)
-		let f1Button = createKeyboardButton(displayText: "F1", keyText: "F1", isToggleable: false)
-		let f2Button = createKeyboardButton(displayText: "F2", keyText: "F2", isToggleable: false)
-		let f3Button = createKeyboardButton(displayText: "F3", keyText: "F3", isToggleable: false)
-		let f4Button = createKeyboardButton(displayText: "F4", keyText: "F4", isToggleable: false)
-		let f5Button = createKeyboardButton(displayText: "F5", keyText: "F5", isToggleable: false)
-		let f6Button = createKeyboardButton(displayText: "F6", keyText: "F6", isToggleable: false)
-		let f7Button = createKeyboardButton(displayText: "F7", keyText: "F7", isToggleable: false)
-		let f8Button = createKeyboardButton(displayText: "F8", keyText: "F8", isToggleable: false)
-		let f9Button = createKeyboardButton(displayText: "F9", keyText: "F9", isToggleable: false)
-		let f10Button = createKeyboardButton(displayText: "F10", keyText: "F10", isToggleable: false)
-		let f11Button = createKeyboardButton(displayText: "F11", keyText: "F11", isToggleable: false)
-		let f12Button = createKeyboardButton(displayText: "F12", keyText: "F12", isToggleable: false)
+		let functionButton = createFunctionMenuButton()
 		let upButton = createKeyboardButton(displayText: "↑", keyText: "UP", isToggleable: false)
 		let downButton = createKeyboardButton(displayText: "↓", keyText: "DOWN", isToggleable: false)
 		let leftButton = createKeyboardButton(displayText: "←", keyText: "LEFT", isToggleable: false)
 		let rightButton = createKeyboardButton(displayText: "→", keyText: "RIGHT", isToggleable: false)
 
-		let buttons = [tabBarButton, shiftBarButton, controlBarButton, altBarButton, windowsBarButton, escapeBarButton, f1Button, f2Button, f3Button, f4Button, f5Button, f6Button, f7Button, f8Button, f9Button, f10Button, f11Button, f12Button, deleteBarButton, upButton, downButton, leftButton, rightButton]
+		let buttons = [tabBarButton, shiftBarButton, controlBarButton, altBarButton, windowsBarButton, escapeBarButton, functionButton, deleteBarButton, upButton, downButton, leftButton, rightButton]
 
 		for button in buttons {
 			buttonStackView.addArrangedSubview(button)
@@ -758,7 +1072,7 @@ extension ParsecViewController: UIKeyInput, UITextInputTraits {
 
 		// Done button with frame-based layout
 		let doneButton = UIButton(type: .system)
-		doneButton.frame = CGRect(x: toolbarBackground.bounds.width - 70, y: 0, width: 60, height: 44)
+		doneButton.frame = CGRect(x: toolbarBackground.bounds.width - safeRight - 60, y: 0, width: 60, height: 44)
 		doneButton.autoresizingMask = [.flexibleLeftMargin]
 		doneButton.setTitle("Done", for: .normal)
 		doneButton.addTarget(self, action: #selector(doneTapped), for: .touchUpInside)
@@ -791,6 +1105,29 @@ extension ParsecViewController: UIKeyInput, UITextInputTraits {
 		// Set target and action for button
 		button.addTarget(target, action: #selector(toolbarButtonClicked(_:)), for: .touchUpInside)
 
+		return button
+	}
+
+	func createFunctionMenuButton() -> UIButton {
+		let button = UIButton(type: .system)
+		button.setTitle("Fn", for: .normal)
+		button.titleLabel?.font = .systemFont(ofSize: 12, weight: .semibold)
+		button.setTitleColor(.white, for: .normal)
+		button.backgroundColor = .black
+		button.layer.cornerRadius = 6
+		button.widthAnchor.constraint(equalToConstant: 40).isActive = true
+		button.heightAnchor.constraint(equalToConstant: 36).isActive = true
+		button.showsMenuAsPrimaryAction = true
+		button.menu = UIMenu(
+			title: "Function Keys",
+			options: .displayInline,
+			children: (1...12).map { number in
+				UIAction(title: "F\(number)") { _ in
+					CParsec.sendVirtualKeyboardInput(text: "F\(number)")
+					UISelectionFeedbackGenerator().selectionChanged()
+				}
+			}
+		)
 		return button
 	}
 

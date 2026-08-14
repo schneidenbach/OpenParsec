@@ -1,5 +1,6 @@
 import SwiftUI
 import ParsecSDK
+import Network
 
 struct MainView: View {
 	var controller: ContentView?
@@ -31,9 +32,14 @@ struct MainView: View {
 	@State var isRefreshing: Bool = false
 
 	@State var inSettings: Bool = false
+	@State private var profileEditorHost: IdentifiableHostInfo?
+	@State private var showPeerConnect = false
+	@State private var peerInput = ""
+	@ObservedObject private var connectivity = ConnectivityMonitor.shared
+	@Environment(\.horizontalSizeClass) private var horizontalSizeClass
 
 	var busy: Bool {
-		isConnecting || isRefreshing || inSettings
+		isConnecting
 	}
 
 	init(_ controller: ContentView?) {
@@ -42,312 +48,284 @@ struct MainView: View {
 
 	var body: some View {
 		ZStack {
-			// Background
-			Rectangle()
-				.fill(Color("BackgroundTab"))
-				.edgesIgnoringSafeArea(.all)
-			Rectangle()
-				.fill(Color("BackgroundGray"))
-				.padding(.vertical, 52)
-
-			// Main controls
-			VStack {
-				// Navigation controls
-				HStack {
-					Button(action: { showLogoutAlert = true }, label: { Image("SymbolExit").scaleEffect(x: -1) })
-						.padding()
-						.alert(isPresented: $showLogoutAlert) {
-							Alert(title: Text("Are you sure you want to logout?"), primaryButton: .destructive(Text("Logout"), action: logout), secondaryButton: .cancel(Text("Cancel")))
-						}
-//					Button(action: {
-//						if let c = controller
-//						{
-//							c.setView(.test)
-//
-//						}
-//						
-//					}, label: {
-//						Text("Show TestView")
-//					})
-
-					Spacer()
-					HStack {
-						if page == .hosts {
-							// Probably not the best solution for equal spacing, but I don't know how to do math properly in SwiftUI. Please send me an issue if you have a better solution.
-							Image(systemName: "arrow.clockwise")
-								.padding(4)
-								.opacity(0)
-
-							Text(hostCountStr)
-								.multilineTextAlignment(.center)
-								.foregroundColor(Color("Foreground"))
-								.font(.system(size: 20, weight: .medium))
-							Button(action: refreshHosts, label: { Image(systemName: "arrow.clockwise") })
-								.padding(4)
-						} else if page == .friends {
-							Text(friendCountStr)
-								.multilineTextAlignment(.center)
-								.foregroundColor(Color("Foreground"))
-								.font(.system(size: 20, weight: .medium))
-						}
-					}
-					Spacer()
-					Button(action: { inSettings = true }, label: { Image(systemName: "gear") })
-						.padding()
-				}
-				.foregroundColor(Color("AccentColor"))
-				.background(Color("BackgroundTab")
-					.frame(height: 52)
-					.shadow(color: Color("Shading"), radius: 4, y: 6)
-					.mask(Rectangle().frame(height: 80).offset(y: 50))
-				)
-				.zIndex(1)
-
-				ZStack {
-					// Hosts page
-					ScrollView(.vertical) {
-						VStack {
-							Text(refreshTime)
-								.multilineTextAlignment(.center)
-								.opacity(0.5)
-							ForEach(hosts) { i in
-								ZStack {
-									VStack {
-										URLImage(url: URL(string: "https://parsecusercontent.com/cors-resize-image/w=64,h=64,fit=crop,background=white,q=90,f=jpeg/avatars/\(String(i.user.id))/avatar"),
-												output:
-												{
-													$0
-														.resizable()
-														.aspectRatio(contentMode: .fit)
-														.frame(width: 64, height: 64)
-														.cornerRadius(8)
-												},
-												placeholder:
-												{
-													Image("IconTransparent")
-														.resizable()
-														.aspectRatio(contentMode: .fit)
-														.frame(width: 64, height: 64)
-														.background(Rectangle().fill(Color("BackgroundPrompt")))
-														.cornerRadius(8)
-												})
-										Text(i.hostname)
-											.font(.system(size: 20, weight: .medium))
-											.multilineTextAlignment(.center)
-										Text("\(i.user.name)#\(String(i.user.id))")
-											.font(.system(size: 16, weight: .medium))
-											.multilineTextAlignment(.center)
-											.opacity(0.5)
-										Button(action: { connectTo(i) }) {
-											ZStack {
-												Rectangle()
-													.fill(Color("AccentColor"))
-													.cornerRadius(8)
-												Text("Connect")
-													.foregroundColor(.white)
-													.padding(8)
-											}
-											.frame(maxWidth: 100)
-										}
-									}
-
-									if i.connections > 0 {
-										VStack {
-											HStack {
-												Image(systemName: "person.fill")
-												Text(String(i.connections))
-													.font(.system(size: 16, weight: .medium))
-												Spacer()
-											}
-											Spacer()
-										}
-									}
-								}
-								.padding()
-								.frame(maxWidth: 400)
-								.background(Rectangle().fill(Color("BackgroundCard")))
-								.cornerRadius(8)
-							}
-						}
-						.padding()
-					}
-					.zIndex(page == .hosts ? 0 : -1)
-					.disabled(page != .hosts)
-					.opacity(page == .hosts ? 1 : 0)
-
-					// Friends page
-					ScrollView(.vertical) {
-						VStack {
-							if let user = userInfo {
-								Text("You")
-									.multilineTextAlignment(.center)
-									.opacity(0.5)
-								HStack {
-									URLImage(url: URL(string: "https://parsecusercontent.com/cors-resize-image/w=48,h=48,fit=crop,background=white,q=90,f=jpeg/avatars/\(String(user.id))/avatar"),
-										output:
-										{
-											$0
-												.resizable()
-												.aspectRatio(contentMode: .fit)
-												.frame(width: 48, height: 48)
-												.cornerRadius(6)
-										},
-										placeholder:
-										{
-											Image("IconTransparent")
-												.resizable()
-												.aspectRatio(contentMode: .fit)
-												.frame(width: 48, height: 48)
-												.background(Rectangle().fill(Color("BackgroundPrompt")))
-												.cornerRadius(6)
-										})
-									Text("\(user.username)#\(String(user.id))")
-										.font(.system(size: 16, weight: .medium))
-										.multilineTextAlignment(.center)
-									Spacer()
-								}
-								.padding(8)
-								.background(Color("BackgroundCard"))
-								.cornerRadius(12)
-							}
-							if friends.count > 0 {
-								Text("Friends")
-									.multilineTextAlignment(.center)
-									.opacity(0.5)
-								ForEach(friends) { i in
-									HStack {
-										URLImage(url: URL(string: "https://parsecusercontent.com/cors-resize-image/w=48,h=48,fit=crop,background=white,q=90,f=jpeg/avatars/\(String(i.id))/avatar"),
-											output:
-											{
-												$0
-													.resizable()
-													.aspectRatio(contentMode: .fit)
-													.frame(width: 48, height: 48)
-													.cornerRadius(6)
-											},
-											placeholder:
-											{
-												Image("IconTransparent")
-													.resizable()
-													.aspectRatio(contentMode: .fit)
-													.frame(width: 48, height: 48)
-													.background(Rectangle().fill(Color("BackgroundPrompt")))
-													.cornerRadius(6)
-											})
-										Text("\(i.username)#\(String(i.id))")
-											.font(.system(size: 16, weight: .medium))
-											.multilineTextAlignment(.center)
-										Spacer()
-//										Button(action:{ }, label:{ Image(systemName:"ellipsis.circle.fill") })
-//											.font(.system(size:20))
-//											.foregroundColor(Color("AccentColor"))
-//											.padding(8)
-									}
-									.padding(8)
-									.background(Color("BackgroundCard"))
-									.cornerRadius(12)
-								}
-							}
-						}
-						.padding()
-					}
-					.zIndex(page == .friends ? 0 : -1)
-					.disabled(page != .friends)
-					.opacity(page == .friends ? 1 : 0)
-				}
-				.padding(.top, -8)
-				.frame(maxWidth: .infinity)
-				.alert(isPresented: $showBaseAlert) {
-					Alert(title: Text(baseAlertText))
-				}
-
-				// Page controls
-				HStack {
-					Spacer()
-					Button(action: { page = .hosts }, label:
-					{
-						VStack {
-							Image(systemName: "desktopcomputer")
-							Text("Hosts")
-						}
-					})
-					.foregroundColor(Color(page == .hosts ? "AccentColor" : "ForegroundInactive"))
-					.disabled(page == .hosts)
-					Spacer()
-					Button(action: { page = .friends }, label:
-					{
-						VStack {
-							Image(systemName: "person.2.fill")
-							Text("Friends")
-						}
-					})
-					.foregroundColor(Color(page == .friends ? "AccentColor" : "ForegroundInactive"))
-					.disabled(page == .friends)
-					Spacer()
-				}
-				.padding([.leading, .bottom, .trailing], 4)
-				.background(Color("BackgroundTab")
-					.padding(.top, -8)
-					.shadow(color: Color("Shading"), radius: 4, y: -2)
-					.mask(Rectangle().frame(height: 80).offset(y: -50))
-				)
-				.zIndex(1)
-			}
+			appNavigation
+			.disabled(busy)
 			.onAppear(perform: initView)
-			.disabled(busy) // disable view if busy
 
-			// Settings screen
-			SettingsView(visible: $inSettings)
-
-			// Loading elements
 			if isConnecting {
-				ZStack {
-					Rectangle() // Darken background
-						.fill(Color.black)
-						.opacity(0.5)
-						.edgesIgnoringSafeArea(.all)
-					VStack {
-						ActivityIndicator(isAnimating: $isConnecting, style: .large, tint: .white)
-							.padding()
-						Text("Requesting connection to \(connectingToName)...")
-							.multilineTextAlignment(.center)
-						Button(action: cancelConnection) {
-							ZStack {
-								Rectangle()
-									.fill(Color("BackgroundButton"))
-									.cornerRadius(8)
-								Text("Cancel")
-									.foregroundColor(.red)
-							}
-						}
-						.frame(maxWidth: 100, maxHeight: 48)
+				connectingOverlay
+					.transition(.opacity.combined(with: .scale(scale: 0.96)))
+			}
+		}
+		.sheet(isPresented: $inSettings) {
+			SettingsView(visible: $inSettings)
+		}
+		.sheet(item: $profileEditorHost) { host in
+			HostProfileEditor(host: host)
+		}
+		.sheet(isPresented: $showPeerConnect) {
+			PeerConnectView(peerInput: $peerInput) {
+				connectToPeerInput()
+			}
+			.presentationDetents([.medium])
+		}
+		.confirmationDialog("Sign out of OpenParsec?", isPresented: $showLogoutAlert, titleVisibility: .visible) {
+			Button("Sign Out", role: .destructive, action: logout)
+			Button("Cancel", role: .cancel) {}
+		}
+		.alert("Something went wrong", isPresented: $showBaseAlert) {
+			Button("OK", role: .cancel) {}
+		} message: {
+			Text(baseAlertText)
+		}
+		.onOpenURL(perform: handleIncomingURL)
+		.onReceive(SessionContext.shared.$pendingConnectionURL.compactMap { $0 }) { url in
+			SessionContext.shared.pendingConnectionURL = nil
+			handleIncomingURL(url)
+		}
+		.onChange(of: connectivity.isOnline) { _, online in
+			if online {
+				refreshHosts()
+			}
+		}
+	}
+
+	@ViewBuilder
+	private var appNavigation: some View {
+		if horizontalSizeClass == .regular {
+			NavigationSplitView {
+				List {
+					Button {
+						page = .hosts
+					} label: {
+						Label("Computers", systemImage: "desktopcomputer")
+							.frame(maxWidth: .infinity, alignment: .leading)
 					}
-					.padding()
-					.background(Rectangle().fill(Color("BackgroundPrompt")))
-					.cornerRadius(8)
-					.padding()
+					.listRowBackground(page == .hosts ? Color.accentColor.opacity(0.16) : Color.clear)
+
+					Button {
+						page = .friends
+					} label: {
+						Label("People", systemImage: "person.2.fill")
+							.frame(maxWidth: .infinity, alignment: .leading)
+					}
+					.listRowBackground(page == .friends ? Color.accentColor.opacity(0.16) : Color.clear)
+				}
+				.buttonStyle(.plain)
+				.navigationTitle("OpenParsec")
+			} detail: {
+				NavigationStack {
+					Group {
+						if page == .hosts {
+							hostsContent
+						} else {
+							peopleContent
+						}
+					}
+					.navigationTitle(page == .hosts ? "Computers" : "People")
+					.toolbar { mainToolbar }
 				}
 			}
+		} else {
+			TabView(selection: $page) {
+				NavigationStack {
+					hostsContent
+						.navigationTitle("Computers")
+						.toolbar { mainToolbar }
+				}
+				.tabItem {
+					Label("Computers", systemImage: "desktopcomputer")
+				}
+				.tag(Page.hosts)
+
+				NavigationStack {
+					peopleContent
+						.navigationTitle("People")
+						.toolbar { mainToolbar }
+				}
+				.tabItem {
+					Label("People", systemImage: "person.2.fill")
+				}
+				.tag(Page.friends)
+			}
+		}
+	}
+
+	@ToolbarContentBuilder
+	private var mainToolbar: some ToolbarContent {
+		ToolbarItem(placement: .topBarLeading) {
+			Menu {
+				if let userInfo {
+					Label("\(userInfo.username)#\(userInfo.id)", systemImage: "person.crop.circle")
+				}
+				Button("Sign Out", systemImage: "rectangle.portrait.and.arrow.right", role: .destructive) {
+					showLogoutAlert = true
+				}
+			} label: {
+				Image(systemName: "person.crop.circle")
+			}
+			.accessibilityLabel("Account")
+		}
+
+		ToolbarItemGroup(placement: .topBarTrailing) {
 			if isRefreshing {
-				ZStack {
-					Rectangle() // Darken background
-						.fill(Color.black)
-						.opacity(0.5)
-						.edgesIgnoringSafeArea(.all)
-					VStack {
-						ActivityIndicator(isAnimating: $isRefreshing, style: .large, tint: .white)
-							.padding()
-						Text("Refreshing hosts...")
-							.multilineTextAlignment(.center)
+				ProgressView()
+			} else if page == .hosts {
+				Button(action: refreshHosts) {
+					Image(systemName: "arrow.clockwise")
+				}
+				.accessibilityLabel("Refresh computers")
+			}
+
+			Button {
+				showPeerConnect = true
+			} label: {
+				Image(systemName: "plus")
+			}
+			.accessibilityLabel("Connect with peer ID or link")
+
+			Button {
+				inSettings = true
+			} label: {
+				Image(systemName: "gearshape")
+			}
+			.accessibilityLabel("Settings")
+		}
+	}
+
+	@ViewBuilder
+	private var hostsContent: some View {
+		if !connectivity.isOnline {
+			ContentUnavailableView {
+				Label("You’re Offline", systemImage: "wifi.slash")
+			} description: {
+				Text("OpenParsec will refresh automatically when the connection returns.")
+			}
+		} else
+		if hosts.isEmpty && !isRefreshing {
+			ContentUnavailableView {
+				Label("No Computers", systemImage: "desktopcomputer.trianglebadge.exclamationmark")
+			} description: {
+				Text("Make sure Parsec is running on a host, then refresh.")
+			} actions: {
+				Button("Refresh", action: refreshHosts)
+					.buttonStyle(.borderedProminent)
+			}
+		} else {
+			ScrollView {
+				LazyVGrid(
+					columns: [GridItem(.adaptive(minimum: 280, maximum: 440), spacing: 16)],
+					spacing: 16
+				) {
+					ForEach(hosts) { host in
+						Button {
+							connectTo(host)
+						} label: {
+							ComputerCard(host: host)
+						}
+						.buttonStyle(PressableCardButtonStyle())
+						.accessibilityHint("Connects to \(host.hostname)")
+						.contextMenu {
+							Menu("Use Preset", systemImage: "dial.medium") {
+								ForEach(HostProfileKind.allCases) { kind in
+									Button {
+										HostProfileStore.set(.preset(kind), for: host.id)
+									} label: {
+										Label(kind.label, systemImage: kind.systemImage)
+									}
+								}
+							}
+							Button {
+								profileEditorHost = host
+							} label: {
+								Label("Connection Profile", systemImage: "slider.horizontal.3")
+							}
+							Button {
+								UIPasteboard.general.string = host.id
+							} label: {
+								Label("Copy Peer ID", systemImage: "doc.on.doc")
+							}
+						}
 					}
-					.padding()
-					.background(Rectangle().fill(Color("BackgroundPrompt")))
-					.cornerRadius(8)
-					.padding()
+				}
+				.padding(.horizontal, 16)
+				.padding(.top, 8)
+
+				Text(refreshTime)
+					.font(.footnote)
+					.foregroundStyle(.tertiary)
+					.padding(.vertical, 12)
+			}
+			.refreshable {
+				refreshHosts()
+			}
+		}
+	}
+
+	@ViewBuilder
+	private var peopleContent: some View {
+		List {
+			if let userInfo {
+				Section("You") {
+					PersonRow(user: userInfo)
+				}
+			}
+
+			if friends.isEmpty {
+				Section {
+					ContentUnavailableView(
+						"No Friends Yet",
+						systemImage: "person.2.slash",
+						description: Text("Friends from your Parsec account will appear here.")
+					)
+					.listRowBackground(Color.clear)
+				}
+			} else {
+				Section("Friends") {
+					ForEach(friends) { friend in
+						PersonRow(user: friend)
+					}
+				}
+			}
+
+			Section {
+				Link(destination: URL(string: "https://parsec.app/account")!) {
+					Label("Manage Friends & Invitations", systemImage: "person.badge.plus")
 				}
 			}
 		}
-		.foregroundColor(Color("Foreground"))
+		.listStyle(.insetGrouped)
+		.refreshable {
+			refreshSelf()
+			refreshFriends()
+		}
+	}
+
+	private var connectingOverlay: some View {
+		ZStack {
+			Color.black.opacity(0.45)
+				.ignoresSafeArea()
+
+			VStack(spacing: 18) {
+				ProgressView()
+					.controlSize(.large)
+
+				VStack(spacing: 5) {
+					Text("Connecting")
+						.font(.headline)
+					Text(connectingToName)
+						.font(.subheadline)
+						.foregroundStyle(.secondary)
+				}
+
+				Button("Cancel", role: .cancel, action: cancelConnection)
+					.buttonStyle(.bordered)
+			}
+			.padding(28)
+			.frame(maxWidth: 320)
+			.background(.regularMaterial, in: RoundedRectangle(cornerRadius: 24, style: .continuous))
+			.shadow(color: .black.opacity(0.25), radius: 30, y: 16)
+		}
 	}
 
 	func initView() {
@@ -516,6 +494,10 @@ struct MainView: View {
 	}
 
 	func connectTo(_ who: IdentifiableHostInfo) {
+		let profile = HostProfileStore.profile(for: who.id)
+		profile.apply()
+		SessionContext.shared.peerID = who.id
+		SessionContext.shared.hostName = who.hostname
 		CParsec.initialize()
 		connectingToName = who.hostname
 		withAnimation { isConnecting = true }
@@ -543,6 +525,45 @@ struct MainView: View {
 		}
 	}
 
+	private func connectToPeerInput() {
+		guard let peerID = parsedPeerID(from: peerInput) else {
+			baseAlertText = "Enter a valid Parsec peer ID or share link."
+			showBaseAlert = true
+			return
+		}
+		showPeerConnect = false
+		let host = hosts.first(where: { $0.id == peerID })
+			?? IdentifiableHostInfo(
+				id: peerID,
+				hostname: "Peer \(peerID.prefix(8))",
+				user: UserInfo(id: 0, name: "Shared computer", warp: false, team_id: ""),
+				connections: 0
+			)
+		connectTo(host)
+	}
+
+	private func handleIncomingURL(_ url: URL) {
+		peerInput = url.absoluteString
+		connectToPeerInput()
+	}
+
+	private func parsedPeerID(from input: String) -> String? {
+		let trimmed = input.trimmingCharacters(in: .whitespacesAndNewlines)
+		guard !trimmed.isEmpty else { return nil }
+		if let url = URL(string: trimmed), url.scheme != nil {
+			let query = URLComponents(url: url, resolvingAgainstBaseURL: false)?
+				.queryItems?
+				.first(where: { ["peer_id", "peer", "id"].contains($0.name.lowercased()) })?
+				.value
+			if let query, !query.isEmpty { return query }
+			let component = url.pathComponents.last
+			if let component, component != "/" && !component.isEmpty { return component }
+			if url.scheme == "openparsec", let host = url.host, host != "connect" { return host }
+			return nil
+		}
+		return trimmed.replacingOccurrences(of: "#", with: "")
+	}
+
 	func cancelConnection() {
 		withAnimation { isConnecting = false }
 
@@ -568,6 +589,215 @@ struct MainView: View {
 	}
 }
 
+private struct ComputerCard: View {
+	let host: IdentifiableHostInfo
+	private var profile: HostProfile { HostProfileStore.profile(for: host.id) }
+
+	var body: some View {
+		HStack(spacing: 16) {
+			ZStack {
+				RoundedRectangle(cornerRadius: 16, style: .continuous)
+					.fill(Color.accentColor.gradient)
+				Image(systemName: "desktopcomputer")
+					.font(.system(size: 28, weight: .semibold))
+					.foregroundStyle(.white)
+			}
+			.frame(width: 64, height: 64)
+
+			VStack(alignment: .leading, spacing: 5) {
+				Text(host.hostname)
+					.font(.headline)
+					.foregroundStyle(.primary)
+					.lineLimit(1)
+
+				Text("\(host.user.name)#\(host.user.id)")
+					.font(.subheadline)
+					.foregroundStyle(.secondary)
+					.lineLimit(1)
+
+				HStack(spacing: 6) {
+					Circle()
+						.fill(host.connections > 0 ? Color.orange : Color.green)
+						.frame(width: 7, height: 7)
+					Text(host.connections > 0 ? "\(host.connections) connected" : "Ready")
+						.font(.caption)
+						.foregroundStyle(.secondary)
+
+					Text("·")
+						.foregroundStyle(.tertiary)
+					Label(profile.kind.label, systemImage: profile.kind.systemImage)
+						.font(.caption)
+						.foregroundStyle(.secondary)
+				}
+			}
+
+			Spacer(minLength: 8)
+
+			Image(systemName: "play.fill")
+				.font(.headline)
+				.foregroundStyle(.white)
+				.padding(12)
+				.background(Color.accentColor, in: Circle())
+		}
+		.padding(16)
+		.frame(maxWidth: .infinity, alignment: .leading)
+		.background(.regularMaterial, in: RoundedRectangle(cornerRadius: 22, style: .continuous))
+		.overlay {
+			RoundedRectangle(cornerRadius: 22, style: .continuous)
+				.stroke(.white.opacity(0.08))
+		}
+	}
+}
+
+private struct PersonRow: View {
+	let user: IdentifiableUserInfo
+
+	var body: some View {
+		HStack(spacing: 12) {
+			URLImage(
+				url: URL(string: "https://parsecusercontent.com/cors-resize-image/w=48,h=48,fit=crop,background=white,q=90,f=jpeg/avatars/\(user.id)/avatar"),
+				output: {
+					$0
+						.resizable()
+						.scaledToFill()
+						.frame(width: 44, height: 44)
+						.clipShape(Circle())
+				},
+				placeholder: {
+					Image(systemName: "person.crop.circle.fill")
+						.resizable()
+						.foregroundStyle(.secondary)
+						.frame(width: 44, height: 44)
+				}
+			)
+
+			VStack(alignment: .leading, spacing: 2) {
+				Text(user.username)
+					.font(.body.weight(.medium))
+				Text("#\(user.id)")
+					.font(.caption)
+					.foregroundStyle(.secondary)
+			}
+		}
+		.padding(.vertical, 2)
+	}
+}
+
+private struct PressableCardButtonStyle: ButtonStyle {
+	func makeBody(configuration: Configuration) -> some View {
+		configuration.label
+			.scaleEffect(configuration.isPressed ? 0.98 : 1)
+			.opacity(configuration.isPressed ? 0.88 : 1)
+			.animation(.easeOut(duration: 0.12), value: configuration.isPressed)
+	}
+}
+
+private struct PeerConnectView: View {
+	@Binding var peerInput: String
+	let connect: () -> Void
+	@Environment(\.dismiss) private var dismiss
+
+	var body: some View {
+		NavigationStack {
+			Form {
+				Section {
+					TextField("Peer ID or Parsec share link", text: $peerInput)
+						.textInputAutocapitalization(.never)
+						.autocorrectionDisabled()
+						.submitLabel(.go)
+						.onSubmit(connect)
+				} footer: {
+					Text("Paste a peer ID, OpenParsec link, or Parsec share link.")
+				}
+			}
+			.navigationTitle("Connect")
+			.navigationBarTitleDisplayMode(.inline)
+			.toolbar {
+				ToolbarItem(placement: .cancellationAction) {
+					Button("Cancel") { dismiss() }
+				}
+				ToolbarItem(placement: .confirmationAction) {
+					Button("Connect", action: connect)
+						.fontWeight(.semibold)
+						.disabled(peerInput.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty)
+				}
+			}
+		}
+	}
+}
+
+private struct HostProfileEditor: View {
+	let host: IdentifiableHostInfo
+	@Environment(\.dismiss) private var dismiss
+	@State private var profile: HostProfile
+
+	init(host: IdentifiableHostInfo) {
+		self.host = host
+		_profile = State(initialValue: HostProfileStore.profile(for: host.id))
+	}
+
+	var body: some View {
+		NavigationStack {
+			Form {
+				Section {
+					Picker("Preset", selection: Binding(
+						get: { profile.kind },
+						set: { profile = .preset($0) }
+					)) {
+						ForEach(HostProfileKind.allCases) { kind in
+							Label(kind.label, systemImage: kind.systemImage).tag(kind)
+						}
+					}
+				} header: {
+					Text(host.hostname)
+				} footer: {
+					Text("This profile is applied automatically whenever you connect to this computer.")
+				}
+
+				Section("Quality") {
+					Picker("Resolution", selection: $profile.resolution) {
+						ForEach(ParsecResolution.allCases, id: \.self) { resolution in
+							Text(resolution.desc).tag(resolution)
+						}
+					}
+					Picker("Codec", selection: $profile.decoder) {
+						Text("H.264").tag(DecoderPref.h264)
+						Text("Prefer HEVC").tag(DecoderPref.h265)
+					}
+					Picker("Frame rate", selection: $profile.frameRate) {
+						Text("Automatic / ProMotion").tag(0)
+						Text("120 FPS").tag(120)
+						Text("60 FPS").tag(60)
+						Text("30 FPS").tag(30)
+					}
+					Picker("Bitrate", selection: $profile.bitrate) {
+						Text("Automatic").tag(0)
+						ForEach(ParsecResolution.bitrates, id: \.self) { value in
+							Text("\(value) Mbps").tag(value)
+						}
+					}
+					Toggle("Constant frame rate", isOn: $profile.constantFPS)
+					Toggle("Prefer 4:4:4 color", isOn: $profile.color444)
+				}
+			}
+			.navigationTitle("Connection Profile")
+			.navigationBarTitleDisplayMode(.inline)
+			.toolbar {
+				ToolbarItem(placement: .cancellationAction) {
+					Button("Cancel") { dismiss() }
+				}
+				ToolbarItem(placement: .confirmationAction) {
+					Button("Save") {
+						HostProfileStore.set(profile, for: host.id)
+						dismiss()
+					}
+					.fontWeight(.semibold)
+				}
+			}
+		}
+	}
+}
+
 struct MainView_Previews: PreviewProvider {
 	static var previews: some View {
 		MainView(nil)
@@ -586,7 +816,7 @@ struct IdentifiableUserInfo: Identifiable {
 	var username: String // User Display Name
 }
 
-private enum Page {
+private enum Page: Hashable {
 	case hosts
 	case friends
 }

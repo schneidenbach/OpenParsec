@@ -2,12 +2,12 @@ import ParsecSDK
 import MetalKit
 import UIKit
 
-enum RendererType: Int {
+enum RendererType: Int, CaseIterable {
 	case opengl
     case metal
 }
 
-enum DecoderPref: Int {
+enum DecoderPref: Int, Codable {
     case h264
     case h265
 }
@@ -49,6 +49,7 @@ class ParsecSDKBridge: ParsecService {
 	public var pngCursor: Bool = false
 	private var audioWork: DispatchWorkItem?
 	private var eventWork: DispatchWorkItem?
+	private var backgroundGeneration = UUID()
 	var didSetResolution = false
 
 	public var mouseInfo = MouseInfo()
@@ -87,6 +88,8 @@ class ParsecSDKBridge: ParsecService {
 	}
 
 	func connect(_ peerID: String) -> ParsecStatus {
+		didSetResolution = false
+		DataManager.model.output = "none"
 
 		var parsecClientCfg = ParsecClientConfig()
 		parsecClientCfg.video.0.decoderIndex = 1
@@ -95,12 +98,14 @@ class ParsecSDKBridge: ParsecService {
 		parsecClientCfg.video.0.resolutionY = Int32(SettingsHandler.resolution.height)
 		parsecClientCfg.video.0.decoderCompatibility = SettingsHandler.decoderCompatibility
 		parsecClientCfg.video.0.decoderH265 = SettingsHandler.decoder == .h265
+		parsecClientCfg.video.0.decoder444 = SettingsHandler.prefer444
 
 		parsecClientCfg.video.1.decoderIndex = 1
 		parsecClientCfg.video.1.resolutionX = Int32(SettingsHandler.resolution.width)
 		parsecClientCfg.video.1.resolutionY = Int32(SettingsHandler.resolution.height)
 		parsecClientCfg.video.1.decoderCompatibility = SettingsHandler.decoderCompatibility
 		parsecClientCfg.video.1.decoderH265 = SettingsHandler.decoder == .h265
+		parsecClientCfg.video.1.decoder444 = SettingsHandler.prefer444
 
 		parsecClientCfg.mediaContainer = 0
 		parsecClientCfg.protocol = 1
@@ -120,10 +125,12 @@ class ParsecSDKBridge: ParsecService {
 
 	func disconnect() {
 
+		backgroundGeneration = UUID()
 		audioWork?.cancel()
 		eventWork?.cancel()
 		audio_clear(&_audio)
 		ParsecClientDisconnect(_parsec)
+		didSetResolution = false
 
 		ParsecBackgroundManager.shared.connectionDidEnd()
 	}
@@ -157,10 +164,19 @@ class ParsecSDKBridge: ParsecService {
 		ParsecClientGLRenderFrame(_parsec, UInt8(DEFAULT_STREAM), nil, nil, timeout)
 	}
 
-	/*static func renderMetalFrame(_ queue:inout MTLCommandQueue, _ texturePtr: UnsafeMutablePointer<UnsafeMutableRawPointer?>, timeout: UInt32 = 16) // timeout in ms, 16 == 60 FPS, 8 == 120 FPS, etc.
-	 {
-	 ParsecClientMetalRenderFrame(_parsec, UInt8(DEFAULT_STREAM), &queue, texturePtr, nil, nil, timeout)
-	 }*/
+	func renderMetalFrame(commandQueue: MTLCommandQueue, target: MTLTexture, timeout: UInt32 = 16) {
+		let queuePointer = Unmanaged.passUnretained(commandQueue).toOpaque()
+		var texturePointer: UnsafeMutableRawPointer? = Unmanaged.passUnretained(target).toOpaque()
+		ParsecClientMetalRenderFrame(
+			_parsec,
+			UInt8(DEFAULT_STREAM),
+			queuePointer,
+			&texturePointer,
+			nil,
+			nil,
+			timeout
+		)
+	}
 
 	func pollAudio(timeout: UInt32 = 16) { // timeout in ms, 16 == 60 FPS, 8 == 120 FPS, etc.
 		ParsecClientPollAudio(_parsec, audio_cb, timeout, _audioPtr)
@@ -283,12 +299,14 @@ class ParsecSDKBridge: ParsecService {
 		parsecClientCfg.video.0.resolutionY = 0
 		parsecClientCfg.video.0.decoderCompatibility = SettingsHandler.decoderCompatibility
 		parsecClientCfg.video.0.decoderH265 = SettingsHandler.decoder == .h265
+		parsecClientCfg.video.0.decoder444 = SettingsHandler.prefer444
 
 		parsecClientCfg.video.1.decoderIndex = 1
 		parsecClientCfg.video.1.resolutionX = 0
 		parsecClientCfg.video.1.resolutionY = 0
 		parsecClientCfg.video.1.decoderCompatibility = SettingsHandler.decoderCompatibility
 		parsecClientCfg.video.1.decoderH265 = SettingsHandler.decoder == .h265
+		parsecClientCfg.video.1.decoder444 = SettingsHandler.prefer444
 
 		parsecClientCfg.mediaContainer = mediaContainer
 		parsecClientCfg.protocol = netProtocol
@@ -385,9 +403,10 @@ class ParsecSDKBridge: ParsecService {
 		guard let keyCode else {
 			return
 		}
+		let syntheticShift = !isVirtualShiftOn && useShift
 		var keyboardMessagePress = ParsecMessage()
 		keyboardMessagePress.type = MESSAGE_KEYBOARD
-		if !isVirtualShiftOn && useShift {
+		if syntheticShift {
 			keyboardMessagePress.keyboard = ParsecKeyboardMessage(code: KEY_LSHIFT, mod: MOD_NONE, pressed: true, __pad: (0, 0, 0))
 			ParsecClientSendMessage(_parsec, &keyboardMessagePress)
 		}
@@ -395,12 +414,23 @@ class ParsecSDKBridge: ParsecService {
 		ParsecClientSendMessage(_parsec, &keyboardMessagePress)
 
 		// add release delay in case some games ignore instant key release
-		DispatchQueue.global().asyncAfter(deadline: .now() + 0.02) {
-			keyboardMessagePress.keyboard = ParsecKeyboardMessage(code: keyCode, mod: MOD_NONE, pressed: false, __pad: (0, 0, 0))
-			if !self.isVirtualShiftOn && useShift {
-				keyboardMessagePress.keyboard = ParsecKeyboardMessage(code: KEY_LSHIFT, mod: MOD_NONE, pressed: false, __pad: (0, 0, 0))
+		DispatchQueue.global().asyncAfter(deadline: .now() + 0.02) { [weak self] in
+			guard let self else { return }
+
+			// The key and synthetic Shift are separate input events. Previously
+			// the Shift release overwrote the key release, leaving capital keys
+			// stuck down on the host.
+			var keyRelease = ParsecMessage()
+			keyRelease.type = MESSAGE_KEYBOARD
+			keyRelease.keyboard = ParsecKeyboardMessage(code: keyCode, mod: MOD_NONE, pressed: false, __pad: (0, 0, 0))
+			ParsecClientSendMessage(self._parsec, &keyRelease)
+
+			if syntheticShift {
+				var shiftRelease = ParsecMessage()
+				shiftRelease.type = MESSAGE_KEYBOARD
+				shiftRelease.keyboard = ParsecKeyboardMessage(code: KEY_LSHIFT, mod: MOD_NONE, pressed: false, __pad: (0, 0, 0))
+				ParsecClientSendMessage(self._parsec, &shiftRelease)
 			}
-			ParsecClientSendMessage(self._parsec, &keyboardMessagePress)
 		}
 	}
 
@@ -489,15 +519,17 @@ class ParsecSDKBridge: ParsecService {
 	}
 
 	func startBackgroundTask() {
+		let generation = UUID()
+		backgroundGeneration = generation
 
 		let audio = DispatchWorkItem { [weak self] in
-			while let self = self, !(self.audioWork?.isCancelled ?? true) {
+			while let self = self, self.backgroundGeneration == generation {
 				self.pollAudio()
 			}
 		}
 
 		let event = DispatchWorkItem { [weak self] in
-			while let self = self, !(self.eventWork?.isCancelled ?? true) {
+			while let self = self, self.backgroundGeneration == generation {
 				self.pollEvent()
 			}
 		}

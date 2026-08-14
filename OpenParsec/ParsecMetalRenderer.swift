@@ -1,43 +1,53 @@
-/*import MetalKit
-import ParsecSDK
+import MetalKit
 
-class ParsecMetalRenderer:NSObject, MTKViewDelegate
-{
-	var parent:ParsecMetalViewController
-	var onBeforeRender:() -> Void
-	var metalDevice:MTLDevice!
-	var metalCommandQueue:MTLCommandQueue!
-	var metalTexture:MTLTexture!
-	var metalTexturePtr: UnsafeMutableRawPointer?
-	
-	var lastWidth:CGFloat = 1.0
+final class ParsecMetalRenderer: NSObject, MTKViewDelegate {
+	private let commandQueue: MTLCommandQueue
+	private let updateImage: () -> Void
+	private var lastDrawableSize: CGSize = .zero
 
-	init(_ parent:ParsecMetalViewController, _ beforeRender:@escaping () -> Void)
-	{
-		self.parent = parent;
-		onBeforeRender = beforeRender
-		if let metalDevice = MTLCreateSystemDefaultDevice()
-		{
-			self.metalDevice = metalDevice
+	init?(view: MTKView, updateImage: @escaping () -> Void) {
+		guard let device = view.device,
+			  let commandQueue = device.makeCommandQueue() else {
+			return nil
 		}
-		self.metalCommandQueue = metalDevice.makeCommandQueue()
-		metalTexture = metalDevice.makeTexture(descriptor:MTLTextureDescriptor())
-		metalTexturePtr = createTextureRef(&metalTexture)
-		
+		self.commandQueue = commandQueue
+		self.updateImage = updateImage
 		super.init()
 	}
-	
-	func mtkView(_ view:MTKView, drawableSizeWillChange size: CGSize) { }
-	
-	func draw(in view:MTKView)
-	{
-		onBeforeRender()
-		let deltaWidth: CGFloat = view.frame.size.width - lastWidth
-		if deltaWidth > 0.1 || deltaWidth < -0.1
-		{
-			CParsec.setFrame(view.frame.size.width, view.frame.size.height, view.contentScaleFactor)
-			lastWidth = view.frame.size.width
-		}
-		CParsec.renderMetalFrame(&metalCommandQueue, &metalTexturePtr)
+
+	func mtkView(_ view: MTKView, drawableSizeWillChange size: CGSize) {
+		updateDimensions(for: view)
 	}
-}*/
+
+	func draw(in view: MTKView) {
+		guard let drawable = view.currentDrawable else { return }
+		let texture = drawable.texture
+		updateDimensions(for: view)
+
+		let fps = SettingsHandler.preferredFramesPerSecond == 0
+			? view.window?.screen.maximumFramesPerSecond ?? UIScreen.main.maximumFramesPerSecond
+			: SettingsHandler.preferredFramesPerSecond
+		let timeout = UInt32(max(1000 / max(fps, 1), 8))
+		CParsec.renderMetalFrame(commandQueue: commandQueue, target: texture, timeout: timeout)
+
+		if #available(iOS 15.0, *) {
+			PictureInPictureManager.shared.captureMetalFrame(
+				sourceTexture: texture,
+				commandQueue: commandQueue,
+				streamWidth: Int(CParsec.hostWidth),
+				streamHeight: Int(CParsec.hostHeight)
+			)
+		}
+		if let presentationBuffer = commandQueue.makeCommandBuffer() {
+			presentationBuffer.present(drawable)
+			presentationBuffer.commit()
+		}
+		updateImage()
+	}
+
+	private func updateDimensions(for view: MTKView) {
+		guard view.drawableSize != lastDrawableSize else { return }
+		lastDrawableSize = view.drawableSize
+		CParsec.setFrame(view.bounds.width, view.bounds.height, view.contentScaleFactor)
+	}
+}

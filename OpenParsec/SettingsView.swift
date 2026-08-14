@@ -3,18 +3,23 @@ import SwiftUI
 struct SettingsView: View {
 	@Binding var visible: Bool
 
-	// @State var renderer:RendererType = SettingsHandler.renderer
 	@AppStorage("resolution") var resolution: ParsecResolution = .client
 	@AppStorage("bitrate") var bitrate: Int = 0
 	@AppStorage("decoder") var decoder: DecoderPref = .h264
 	@AppStorage("cursorMode") var cursorMode: CursorMode = .touchpad
 	@AppStorage("cursorScale") var cursorScale: Double = 0.5
 	@AppStorage("mouseSensitivity") var mouseSensitivity: Double = 1.0
+	@AppStorage("pointerAcceleration") var pointerAcceleration: PointerAcceleration = .adaptive
+	@AppStorage("dragLock") var dragLock: Bool = false
+	@AppStorage("doubleTapToDrag") var doubleTapToDrag: Bool = true
+	@AppStorage("naturalScrolling") var naturalScrolling: Bool = true
+	@AppStorage("swapCommandControl") var swapCommandControl: Bool = true
 	@AppStorage("noOverlay") var noOverlay: Bool = false
 	@AppStorage("hideStatusBar") var hideStatusBar: Bool = true
 	@AppStorage("rightClickPosition") var rightClickPosition: RightClickPosition = .firstFinger
 	@AppStorage("preferredFramesPerSecond") var preferredFramesPerSecond: Int = 60 // 0 = use device max (ProMotion)
 	@AppStorage("decoderCompatibility") var decoderCompatibility: Bool = false // Enable for stutter issues on some devices
+	@AppStorage("prefer444") var prefer444: Bool = false
 	@AppStorage("showKeyboardButton") var showKeyboardButton: Bool = true
 	@AppStorage("saveSessionSettings") var saveSessionSettings: Bool = true
 
@@ -30,150 +35,132 @@ struct SettingsView: View {
 	}
 
 	var body: some View {
-		ZStack {
-			if visible {
-				// Background
-				Rectangle()
-					.fill(Color.init(red: 0, green: 0, blue: 0, opacity: 0.67))
-					.edgesIgnoringSafeArea(.all)
-			}
-		}
-		.animation(.linear(duration: 0.24))
-
-		ZStack {
-			if visible {
-				// Main controls
-				VStack {
-					// Navigation controls
-					ZStack {
-						Rectangle()
-							.fill(Color("BackgroundTab"))
-							.frame(height: 52)
-							.shadow(color: Color("Shading"), radius: 4, y: 6)
-						ZStack {
-							HStack {
-								Button(action: saveAndExit, label: { Image(systemName: "xmark").scaleEffect(x: -1) })
-								 .padding()
-								Spacer()
-							}
-							Text("Settings")
-								.multilineTextAlignment(.center)
-								.foregroundColor(Color("Foreground"))
-								.font(.system(size: 20, weight: .medium))
-							Spacer()
-						}
-						.foregroundColor(Color("AccentColor"))
+		NavigationStack {
+			Form {
+				Section {
+					Picker("Pointer style", selection: $cursorMode) {
+						Text("Trackpad").tag(CursorMode.touchpad)
+						Text("Direct touch").tag(CursorMode.direct)
 					}
-					.zIndex(1)
+					.pickerStyle(.segmented)
 
-					ScrollView {
-                        CatTitle("Interactivity")
-                        CatList {
-                            CatItem("Mouse Movement") {
-                                MultiPicker(selection: $cursorMode, options:
-								[
-									Choice("Touchpad", CursorMode.touchpad),
-									Choice("Direct", CursorMode.direct)
-								])
-                            }
-							CatItem("Right Click Position") {
-								MultiPicker(selection: $rightClickPosition, options:
-								[
-									Choice("First Finger", RightClickPosition.firstFinger),
-									Choice("Middle", RightClickPosition.middle),
-									Choice("Second Finger", RightClickPosition.secondFinger)
-								])
-							}
-                            CatItem("Cursor Scale") {
-                                Slider(value: $cursorScale, in: 0.1...4, step: 0.1)
-									.frame(width: 200)
-								Text(String(format: "%.1f", cursorScale))
-                            }
-							CatItem("Mouse Sensitivity") {
-								Slider(value: $mouseSensitivity, in: 0.1...4, step: 0.1)
-									.frame(width: 200)
-								Text(String(format: "%.1f", mouseSensitivity))
-							}
-                        }
-                        CatTitle("Graphics")
-                        CatList {
-                            /*CatItem("Renderer")
-                            {
-								SegmentPicker(selection:$renderer, options:
-								[
-									Choice("OpenGL", RendererType.opengl),
-									Choice("Metal", RendererType.metal)
-								])
-                                .frame(width:165)
-                            }*/
-							CatItem("Default Resolution") {
-								MultiPicker(selection: $resolution, options: resolutionChoices)
-							}
-                            CatItem("Decoder") {
-								MultiPicker(selection: $decoder, options:
-								[
-									Choice("H.264", DecoderPref.h264),
-									Choice("Prefer H.265", DecoderPref.h265)
-								])
-                            }
-							CatItem("Frame Rate") {
-								MultiPicker(selection: $preferredFramesPerSecond, options:
-								[
-									Choice("Auto (Device Max)", 0),
-									Choice("120 FPS", 120),
-									Choice("60 FPS", 60),
-									Choice("30 FPS", 30)
-								])
-							}
-							CatItem("Decoder Compatibility") {
-								Toggle("", isOn: $decoderCompatibility)
-									.frame(width: 80)
-							}
-                        }
-                        CatTitle("Misc")
-                        CatList {
-                            CatItem("Never Show Overlay") {
-                                Toggle("", isOn: $noOverlay)
-                                    .frame(width: 80)
-                            }
-							CatItem("Hide Status Bar") {
-								Toggle("", isOn: $hideStatusBar)
-									.frame(width: 80)
-							}
-							CatItem("Show Keyboard Button") {
-								Toggle("", isOn: $showKeyboardButton)
-									.frame(width: 80)
-							}
-							CatItem("Save Session Settings") {
-								Toggle("", isOn: $saveSessionSettings)
-									.frame(width: 80)
-							}
-						}
-						Text(getVersionInfo())
-							.multilineTextAlignment(.center)
-							.opacity(0.5)
-							.padding()
+					Picker("Right-click location", selection: $rightClickPosition) {
+						Text("First finger").tag(RightClickPosition.firstFinger)
+						Text("Middle").tag(RightClickPosition.middle)
+						Text("Second finger").tag(RightClickPosition.secondFinger)
 					}
-                    .foregroundColor(Color("Foreground"))
+
+					SliderSetting(
+						title: "Pointer size",
+						systemImage: "cursorarrow",
+						value: $cursorScale,
+						range: 0.1...4
+					)
+
+					Picker("Pointer acceleration", selection: $pointerAcceleration) {
+						ForEach(PointerAcceleration.allCases) { acceleration in
+							Text(acceleration.label).tag(acceleration)
+						}
+					}
+
+					Toggle("Double-tap to drag", isOn: $doubleTapToDrag)
+					Toggle("Drag lock", isOn: $dragLock)
+					Toggle("Natural scrolling", isOn: $naturalScrolling)
+
+					SliderSetting(
+						title: "Pointer speed",
+						systemImage: "cursorarrow.motionlines",
+						value: $mouseSensitivity,
+						range: 0.1...4
+					)
+				} header: {
+					Label("Controls", systemImage: "hand.draw")
+				} footer: {
+					Text("At 1×, scroll with two fingers. When zoomed, two fingers pan the view and three fingers scroll the remote computer.")
 				}
-				.background(Rectangle().fill(Color("BackgroundGray")))
-				.cornerRadius(8)
-				.padding()
-				.animation(.none)
+
+				Section {
+					LabeledContent("Renderer", value: "OpenGL ES · Stable")
+
+					Picker("Default resolution", selection: $resolution) {
+						ForEach(resolutionChoices.indices, id: \.self) { index in
+							Text(resolutionChoices[index].label).tag(resolutionChoices[index].value)
+						}
+					}
+
+					Picker("Decoder", selection: $decoder) {
+						Text("H.264").tag(DecoderPref.h264)
+						Text("Prefer H.265").tag(DecoderPref.h265)
+					}
+
+					Picker("Frame rate", selection: $preferredFramesPerSecond) {
+						Text("Automatic").tag(0)
+						Text("120 FPS").tag(120)
+						Text("60 FPS").tag(60)
+						Text("30 FPS").tag(30)
+					}
+
+					Toggle("Compatibility mode", isOn: $decoderCompatibility)
+					Toggle("Prefer 4:4:4 color", isOn: $prefer444)
+				} header: {
+					Label("Streaming", systemImage: "display")
+				} footer: {
+					Text("Try compatibility mode if video stutters or fails to decode.")
+				}
+
+				Section {
+					Toggle("Hide controls by default", isOn: $noOverlay)
+					Toggle("Hide the status bar", isOn: $hideStatusBar)
+					Toggle("Show keyboard shortcut", isOn: $showKeyboardButton)
+					Toggle("Remember session controls", isOn: $saveSessionSettings)
+					Toggle("Swap Command and Control", isOn: $swapCommandControl)
+				} header: {
+					Label("Session", systemImage: "slider.horizontal.3")
+				}
+
+				Section {
+					LabeledContent("Version", value: getVersionInfo())
+				}
+			}
+			.navigationTitle("Settings")
+			.navigationBarTitleDisplayMode(.inline)
+			.toolbar {
+				ToolbarItem(placement: .confirmationAction) {
+					Button("Done", action: saveAndExit)
+						.fontWeight(.semibold)
+				}
 			}
 		}
-        .preferredColorScheme(appScheme)
-		.scaleEffect(visible ? 1 : 0, anchor: .zero)
-		.animation(.easeInOut(duration: 0.24))
+		.preferredColorScheme(appScheme)
 	}
 
 	func saveAndExit() {
-		// SettingsHandler.renderer = renderer
 		visible = false
 	}
 
 	func getVersionInfo() -> String {
 		return "Version \(Bundle.main.infoDictionary!["CFBundleShortVersionString"] ?? "Unknown versino")-\(Bundle.main.infoDictionary!["GitCommitInfo"] ?? "Unknown commit")"
+	}
+}
+
+private struct SliderSetting: View {
+	let title: String
+	let systemImage: String
+	@Binding var value: Double
+	let range: ClosedRange<Double>
+
+	var body: some View {
+		VStack(alignment: .leading, spacing: 10) {
+			HStack {
+				Label(title, systemImage: systemImage)
+				Spacer()
+				Text(value.formatted(.number.precision(.fractionLength(1))))
+					.foregroundStyle(.secondary)
+					.monospacedDigit()
+			}
+			Slider(value: $value, in: range, step: 0.1)
+		}
+		.padding(.vertical, 4)
 	}
 }
 

@@ -27,6 +27,12 @@ struct ContentView: View {
 			 }
 		}
 		.onAppear(perform: initApp)
+		.onOpenURL { url in
+			SessionContext.shared.pendingConnectionURL = url
+			if NetworkHandler.clinfo != nil {
+				setView(.main)
+			}
+		}
 		.background(Rectangle().fill(Color.black).edgesIgnoringSafeArea(.all))
 	}
 

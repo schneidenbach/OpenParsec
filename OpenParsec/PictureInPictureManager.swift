@@ -4,6 +4,8 @@ import CoreVideo
 import OpenGLES
 import GLKit
 import CoreMedia
+import Metal
+import MetalKit
 
 private let kGL_BGRA: GLenum = 0x80E1
 
@@ -22,6 +24,9 @@ class PictureInPictureManager: NSObject {
 	private var captureWidth: GLsizei = 0
 	private var captureHeight: GLsizei = 0
 	private var glContext: EAGLContext?
+	private var metalDevice: MTLDevice?
+	private var metalTextureCache: CVMetalTextureCache?
+	private var metalTexture: CVMetalTexture?
 
 	private var cachedFormatDescription: CMVideoFormatDescription?
 
@@ -52,7 +57,25 @@ class PictureInPictureManager: NSObject {
 
 		self.glContext = glContext
 		self.glkViewController = glkViewController
+		setupController(sourceView: sourceView)
+		setupTextureCache(glContext: glContext)
+		isSetup = true
+	}
 
+	func setup(sourceView: UIView, metalDevice: MTLDevice) {
+		guard !isSetup else { return }
+		guard AVPictureInPictureController.isPictureInPictureSupported() else { return }
+
+		self.metalDevice = metalDevice
+		var cache: CVMetalTextureCache?
+		if CVMetalTextureCacheCreate(kCFAllocatorDefault, nil, metalDevice, nil, &cache) == kCVReturnSuccess {
+			metalTextureCache = cache
+		}
+		setupController(sourceView: sourceView)
+		isSetup = true
+	}
+
+	private func setupController(sourceView: UIView) {
 		try? AVAudioSession.sharedInstance().setCategory(.playback, mode: .default)
 		try? AVAudioSession.sharedInstance().setActive(true)
 
@@ -78,10 +101,6 @@ class PictureInPictureManager: NSObject {
 		controller.delegate = self
 		controller.canStartPictureInPictureAutomaticallyFromInline = false
 		self.pipController = controller
-
-		setupTextureCache(glContext: glContext)
-
-		isSetup = true
 	}
 
 	private func setupTextureCache(glContext: EAGLContext) {
@@ -175,6 +194,7 @@ class PictureInPictureManager: NSObject {
 			captureFBO = 0
 		}
 		cvTexture = nil
+		metalTexture = nil
 		pixelBuffer = nil
 		captureWidth = 0
 		captureHeight = 0
@@ -187,7 +207,8 @@ class PictureInPictureManager: NSObject {
 		guard isSetup else { return }
 
 		frameCount += 1
-		guard frameCount % captureEveryNthFrame == 0 else { return }
+		let captureInterval = (isPiPActive || isStarting) ? captureEveryNthFrame : 30
+		guard frameCount % captureInterval == 0 else { return }
 
 		if streamWidth >= 640 && streamHeight >= 480 && streamWidth <= 7680 && streamHeight <= 4320 {
 			if streamWidth != lastValidStreamWidth || streamHeight != lastValidStreamHeight {
@@ -253,6 +274,97 @@ class PictureInPictureManager: NSObject {
 		glBindFramebuffer(GLenum(GL_FRAMEBUFFER), GLenum(currentFBO))
 
 		feedSampleBuffer()
+	}
+
+	func captureMetalFrame(
+		sourceTexture: MTLTexture,
+		commandQueue: MTLCommandQueue,
+		streamWidth: Int,
+		streamHeight: Int
+	) {
+		guard isSetup, metalDevice != nil, let textureCache = metalTextureCache else { return }
+
+		frameCount += 1
+		let captureInterval = (isPiPActive || isStarting) ? captureEveryNthFrame : 30
+		guard frameCount % captureInterval == 0 else { return }
+
+		// Capture the rendered viewport rather than the raw host resolution. This
+		// preserves the exact aspect-fit result and avoids cropping on iPhone/iPad.
+		let targetWidth = sourceTexture.width
+		let targetHeight = sourceTexture.height
+		_ = streamWidth
+		_ = streamHeight
+
+		if pixelBuffer == nil || captureWidth != targetWidth || captureHeight != targetHeight {
+			pixelBuffer = nil
+			metalTexture = nil
+			cachedFormatDescription = nil
+			captureWidth = GLsizei(targetWidth)
+			captureHeight = GLsizei(targetHeight)
+
+			let attributes: [String: Any] = [
+				kCVPixelBufferMetalCompatibilityKey as String: true,
+				kCVPixelBufferIOSurfacePropertiesKey as String: [:]
+			]
+			var newBuffer: CVPixelBuffer?
+			guard CVPixelBufferCreate(
+				kCFAllocatorDefault,
+				targetWidth,
+				targetHeight,
+				kCVPixelFormatType_32BGRA,
+				attributes as CFDictionary,
+				&newBuffer
+			) == kCVReturnSuccess, let newBuffer else { return }
+			pixelBuffer = newBuffer
+
+			var newTexture: CVMetalTexture?
+			guard CVMetalTextureCacheCreateTextureFromImage(
+				kCFAllocatorDefault,
+				textureCache,
+				newBuffer,
+				nil,
+				.bgra8Unorm,
+				targetWidth,
+				targetHeight,
+				0,
+				&newTexture
+			) == kCVReturnSuccess else { return }
+			metalTexture = newTexture
+		}
+
+		guard let metalTexture,
+			  let destination = CVMetalTextureGetTexture(metalTexture),
+			  let commandBuffer = commandQueue.makeCommandBuffer(),
+			  let blit = commandBuffer.makeBlitCommandEncoder() else { return }
+
+		let copyWidth = min(sourceTexture.width, destination.width)
+		let copyHeight = min(sourceTexture.height, destination.height)
+		blit.copy(
+			from: sourceTexture,
+			sourceSlice: 0,
+			sourceLevel: 0,
+			sourceOrigin: .init(
+				x: max((sourceTexture.width - copyWidth) / 2, 0),
+				y: max((sourceTexture.height - copyHeight) / 2, 0),
+				z: 0
+			),
+			sourceSize: .init(width: copyWidth, height: copyHeight, depth: 1),
+			to: destination,
+			destinationSlice: 0,
+			destinationLevel: 0,
+			destinationOrigin: .init(
+				x: max((destination.width - copyWidth) / 2, 0),
+				y: max((destination.height - copyHeight) / 2, 0),
+				z: 0
+			)
+		)
+		blit.endEncoding()
+		commandBuffer.addCompletedHandler { [weak self] _ in
+			DispatchQueue.main.async {
+				self?.feedSampleBuffer()
+			}
+		}
+		commandBuffer.commit()
 	}
 
 	// MARK: - Sample Buffer
@@ -337,6 +449,11 @@ class PictureInPictureManager: NSObject {
 			CVOpenGLESTextureCacheFlush(cache, 0)
 		}
 		textureCache = nil
+		if let metalTextureCache {
+			CVMetalTextureCacheFlush(metalTextureCache, 0)
+		}
+		metalTextureCache = nil
+		metalDevice = nil
 		pipController = nil
 		sampleBufferDisplayLayer?.removeFromSuperlayer()
 		sampleBufferDisplayLayer = nil

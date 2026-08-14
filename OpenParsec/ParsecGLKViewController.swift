@@ -34,6 +34,7 @@ class ParsecGLKViewController: ParsecPlayground {
 	let updateImage: () -> Void
 
 	let viewController: UIViewController
+	private var baseContentScale: CGFloat = UIScreen.main.nativeScale
 
 	required init(viewController: UIViewController, updateImage: @escaping () -> Void) {
 		self.viewController = viewController
@@ -42,6 +43,8 @@ class ParsecGLKViewController: ParsecPlayground {
 
 	public func viewDidLoad() {
 		glkView = GLKView(frame: CGRect(x: 0, y: 0, width: UIScreen.main.bounds.width, height: UIScreen.main.bounds.height))
+		baseContentScale = viewController.view.window?.screen.nativeScale ?? UIScreen.main.nativeScale
+		glkView.contentScaleFactor = baseContentScale
 		glkRenderer = ParsecGLKRenderer(glkView, glkViewController, updateImage)
 		self.viewController.view.addSubview(glkView)
 		setupGLKViewController()
@@ -77,6 +80,16 @@ class ParsecGLKViewController: ParsecPlayground {
 	func updateSize(width: CGFloat, height: CGFloat) {
 		glkView.frame.size.width = width
 		glkView.frame.size.height = height
+	}
+
+	func updateRenderScale(_ zoomScale: CGFloat) {
+		guard glkView != nil else { return }
+		let detailScale = min(max(zoomScale, 1), 3)
+		let newScale = baseContentScale * detailScale
+		guard abs(glkView.contentScaleFactor - newScale) > 0.05 else { return }
+		glkView.contentScaleFactor = newScale
+		CParsec.setFrame(glkView.bounds.width, glkView.bounds.height, newScale)
+		glkView.setNeedsDisplay()
 	}
 
 }

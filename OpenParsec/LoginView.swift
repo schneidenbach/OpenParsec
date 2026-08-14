@@ -12,120 +12,130 @@ struct LoginView: View {
 	@State var isLoading: Bool = false
 	@State var showAlert: Bool = false
 	@State var alertText: String = ""
+	@FocusState private var focusedField: LoginField?
 
 	init(_ controller: ContentView?) {
 		self.controller = controller
 	}
 
 	var body: some View {
-		ZStack {
-			// Background
-			Rectangle()
-				.fill(Color("BackgroundGray"))
-				.edgesIgnoringSafeArea(.all)
+		NavigationStack {
+			ScrollView {
+				VStack(spacing: 28) {
+					VStack(spacing: 14) {
+						Image("IconTransparent")
+							.resizable()
+							.scaledToFit()
+							.frame(width: 82, height: 82)
+							.padding(18)
+							.background(.regularMaterial, in: RoundedRectangle(cornerRadius: 26, style: .continuous))
+							.shadow(color: .black.opacity(0.18), radius: 24, y: 12)
 
-			// Login controls
-			VStack(spacing: 8) {
-				HStack(spacing: 2) {
-					Image("IconTransparent")
-						.resizable()
-						.aspectRatio(contentMode: .fit)
-					Image("LogoShadow")
-						.resizable()
-						.aspectRatio(contentMode: .fit)
-						.padding([.top, .bottom, .trailing])
-				}
-				.frame(height: 80)
-				TextField("Email", text: $inputEmail)
-					.padding()
-					.background(Rectangle().fill(Color("BackgroundField")))
-					.cornerRadius(8)
-					.disableAutocorrection(true)
-					.autocapitalization(/*@START_MENU_TOKEN@*/.none/*@END_MENU_TOKEN@*/)
-					.keyboardType(.emailAddress)
-					.textContentType(.emailAddress)
-				SecureField("Password", text: $inputPassword)
-					.padding()
-					.background(Rectangle().fill(Color("BackgroundField")))
-					.cornerRadius(8)
-					.disableAutocorrection(true)
-					.autocapitalization(/*@START_MENU_TOKEN@*/.none/*@END_MENU_TOKEN@*/)
-					.textContentType(.password)
-				Button(action: {authenticate()}) {
-					ZStack {
-						Rectangle()
-							.fill(Color("AccentColor"))
-							.cornerRadius(8)
-						Text("Login")
-							.foregroundColor(.white)
+						Text("OpenParsec")
+							.font(.largeTitle.bold())
+
+						Text("Your computers, wherever you are.")
+							.font(.subheadline)
+							.foregroundStyle(.secondary)
 					}
-					.frame(height: 54)
-				}
-			}
+					.padding(.top, 36)
 
-			.padding()
-			.frame(maxWidth: 400)
-			.disabled(isLoading) // Disable when loading
+					VStack(spacing: 14) {
+						TextField("Email", text: $inputEmail)
+							.textContentType(.emailAddress)
+							.keyboardType(.emailAddress)
+							.textInputAutocapitalization(.never)
+							.autocorrectionDisabled()
+							.submitLabel(.next)
+							.focused($focusedField, equals: .email)
+							.onSubmit { focusedField = .password }
 
-			// Loading elements
-			if isLoading || presentTFAAlert {
-				ZStack {
-					Rectangle() // Darken background
-						.fill(Color.black)
-						.opacity(0.5)
-						.edgesIgnoringSafeArea(.all)
-					VStack {
-						if isLoading {
-							ActivityIndicator(isAnimating: $isLoading, style: .large, tint: .white)
-							 .padding()
-						 Text("Loading...")
-							 .multilineTextAlignment(.center)
-						} else if presentTFAAlert {
-							Text("Please enter your 2FA code from your authenticator app")
-								.multilineTextAlignment(.center)
-							SecureField("2FA Code", text: $inputTFA)
-								.padding()
-								.background(Rectangle().fill(Color("BackgroundField")))
-								.foregroundColor(Color("Foreground"))
-								.cornerRadius(8)
-								.disableAutocorrection(true)
-								.autocapitalization(/*@START_MENU_TOKEN@*/.none/*@END_MENU_TOKEN@*/)
-								.textContentType(.oneTimeCode)
-							HStack {
-								Button(action: {presentTFAAlert = false}) {
-									ZStack {
-										Rectangle()
-											.fill(Color("BackgroundButton"))
-											.cornerRadius(8)
-										Text("Cancel")
-											.foregroundColor(Color("Foreground"))
-									}
-									.frame(height: 54)
-								}
-								Button(action: {authenticate(inputTFA)}) {
-									ZStack {
-										Rectangle()
-											.fill(Color("AccentColor"))
-											.cornerRadius(8)
-										Text("Enter")
-											.foregroundColor(.white)
-									}
-									.frame(height: 54)
-								}
+						SecureField("Password", text: $inputPassword)
+							.textContentType(.password)
+							.submitLabel(.go)
+							.focused($focusedField, equals: .password)
+							.onSubmit(signIn)
+					}
+					.textFieldStyle(.roundedBorder)
+					.font(.body)
+
+					Button(action: signIn) {
+						HStack(spacing: 10) {
+							if isLoading {
+								ProgressView()
+									.tint(.white)
 							}
+							Text(isLoading ? "Signing In…" : "Sign In")
+								.fontWeight(.semibold)
 						}
+						.frame(maxWidth: .infinity)
+						.frame(height: 52)
 					}
-					.padding()
-					.background(Rectangle().fill(Color("BackgroundPrompt")))
-					.cornerRadius(8)
-					.padding()
+					.buttonStyle(.borderedProminent)
+					.controlSize(.large)
+					.disabled(isLoading || inputEmail.isEmpty || inputPassword.isEmpty)
+
+					Text("OpenParsec is an independent, open-source client.")
+						.font(.footnote)
+						.foregroundStyle(.tertiary)
+						.multilineTextAlignment(.center)
 				}
+				.frame(maxWidth: 440)
+				.padding(.horizontal, 24)
+				.frame(maxWidth: .infinity)
+			}
+			.scrollDismissesKeyboard(.interactively)
+			.background {
+				LinearGradient(
+					colors: [
+						Color.accentColor.opacity(0.18),
+						Color(uiColor: .systemBackground),
+						Color(uiColor: .systemBackground)
+					],
+					startPoint: .topLeading,
+					endPoint: .bottomTrailing
+				)
+				.ignoresSafeArea()
 			}
 		}
-		.foregroundColor(Color("Foreground"))
+		.disabled(isLoading)
+		.sheet(isPresented: $presentTFAAlert) {
+			NavigationStack {
+				Form {
+					Section {
+						SecureField("Verification code", text: $inputTFA)
+							.keyboardType(.numberPad)
+							.textContentType(.oneTimeCode)
+							.focused($focusedField, equals: .twoFactor)
+					} footer: {
+						Text("Enter the code from your authenticator app.")
+					}
+				}
+				.navigationTitle("Two-Factor Authentication")
+				.navigationBarTitleDisplayMode(.inline)
+				.toolbar {
+					ToolbarItem(placement: .cancellationAction) {
+						Button("Cancel") { presentTFAAlert = false }
+					}
+					ToolbarItem(placement: .confirmationAction) {
+						Button("Verify") { authenticate(inputTFA) }
+							.fontWeight(.semibold)
+							.disabled(inputTFA.isEmpty)
+					}
+				}
+				.onAppear { focusedField = .twoFactor }
+			}
+			.presentationDetents([.medium])
+		}
 		.alert(isPresented: $showAlert) {
 			Alert(title: Text("Login Failed"), message: Text(alertText))
 		}
+	}
+
+	private func signIn() {
+		guard !inputEmail.isEmpty, !inputPassword.isEmpty, !isLoading else { return }
+		focusedField = nil
+		authenticate()
 	}
 
 	func saveToKeychain(data: Data, key: String) {
@@ -211,6 +221,12 @@ struct LoginView: View {
 		}
 		task.resume()
 	}
+}
+
+private enum LoginField {
+	case email
+	case password
+	case twoFactor
 }
 
 struct LoginView_Previews: PreviewProvider {

@@ -2,8 +2,9 @@ import ParsecSDK
 import SwiftUI
 import CoreGraphics
 import GLKit
+import Metal
 
-enum ParsecResolution: String, CaseIterable, Hashable {
+enum ParsecResolution: String, CaseIterable, Hashable, Codable {
 	case host = "Host Resolution"
 	case client = "Client Resolution" // updated dynamically during connection
 	case r3840x2160_16_9 = "3840x2160 (16:9)"
@@ -143,6 +144,7 @@ protocol ParsecService {
 	func getStatusEx(_ pcs: inout ParsecClientStatus) -> ParsecStatus
 	func setFrame(_ width: CGFloat, _ height: CGFloat, _ scale: CGFloat)
 	func renderGLFrame(timeout: UInt32)
+	func renderMetalFrame(commandQueue: MTLCommandQueue, target: MTLTexture, timeout: UInt32)
 	func setMuted(_ muted: Bool)
 	func applyConfig()
 	func sendMouseMessage(_ button: ParsecMouseButton, _ x: Int32, _ y: Int32, _ pressed: Bool)
@@ -214,6 +216,10 @@ class CParsec {
 		parsecImpl.renderGLFrame(timeout: timeout)
 	}
 
+	static func renderMetalFrame(commandQueue: MTLCommandQueue, target: MTLTexture, timeout: UInt32 = 16) {
+		parsecImpl.renderMetalFrame(commandQueue: commandQueue, target: target, timeout: timeout)
+	}
+
 	static func setMuted(_ muted: Bool) {
 		parsecImpl.setMuted(muted)
 	}
@@ -253,6 +259,23 @@ class CParsec {
 
 	static func sendVirtualKeyboardInput(text: String) {
 		parsecImpl.sendVirtualKeyboardInput(text: text)
+	}
+
+	static func sendText(_ text: String) {
+		for character in text {
+			parsecImpl.sendVirtualKeyboardInput(text: String(character))
+		}
+	}
+
+	static func sendChord(modifiers: [UInt32], key: UInt32) {
+		for modifier in modifiers {
+			parsecImpl.sendKeyboardMessage(keyCode: modifier, pressed: true)
+		}
+		parsecImpl.sendKeyboardMessage(keyCode: key, pressed: true)
+		parsecImpl.sendKeyboardMessage(keyCode: key, pressed: false)
+		for modifier in modifiers.reversed() {
+			parsecImpl.sendKeyboardMessage(keyCode: modifier, pressed: false)
+		}
 	}
 
 	static func sendVirtualKeyboardInput(text: String, isOn: Bool) {
