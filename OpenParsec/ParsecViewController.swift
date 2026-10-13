@@ -12,13 +12,6 @@ protocol ParsecPlayground {
 }
 
 class ParsecViewController: UIViewController, UIScrollViewDelegate {
-	private enum TwoFingerGestureMode {
-		case undecided
-		case remoteScroll
-		case zoom
-		case viewportPan
-	}
-
 	var glkView: ParsecPlayground!
 	var gamePadController: GamepadController!
 	var touchController: TouchController!
@@ -27,24 +20,19 @@ class ParsecViewController: UIViewController, UIScrollViewDelegate {
     var lastMouseX: Int32 = -1
     var lastMouseY: Int32 = -1
     var lastCursorHidden: Bool = false
-	var isPinching = false
 	var zoomEnabled = true
-	var lastLongPressPoint: CGPoint = CGPoint()
 	var accumulatedDeltaX: Float = 0.0
 	var accumulatedDeltaY: Float = 0.0
-	var lastPanLocation: CGPoint = .zero
-	var lastPanTranslation: CGPoint = .zero
-	var lastScrollTranslation: CGPoint = .zero
 	var isRemoteDragging = false
-	var dragLocked = false
-	private var twoFingerGestureMode: TwoFingerGestureMode = .undecided
-	private weak var threeFingerScrollGestureRecognizer: UIPanGestureRecognizer?
+	private let gestureClassifier = TouchGestureClassifier()
+	private var pointerAccelerator = PointerAccelerator()
+	private var holdTimer: Timer?
+	private var scheduledHoldDeadline: TimeInterval?
 	private var scrollRemainder: CGPoint = .zero
 	private var scrollMomentumVelocity: CGPoint = .zero
 	private var scrollMomentumTimer: Timer?
 
 	var mouseSensitivity: Float = Float(SettingsHandler.mouseSensitivity)
-	var activatedPanFingerNumber: Int = 0
 
 	var keyboardAccessoriesView: UIView?
 	var keyboardHeight: CGFloat = 0.0
@@ -248,59 +236,19 @@ class ParsecViewController: UIViewController, UIScrollViewDelegate {
 		view.isMultipleTouchEnabled = true
 		view.isUserInteractionEnabled = true
 
-		let panGestureRecognizer = UIPanGestureRecognizer(target: self, action: #selector(self.handlePanGesture(_:)))
-		panGestureRecognizer.delegate = self
-		panGestureRecognizer.minimumNumberOfTouches = 1
-		panGestureRecognizer.maximumNumberOfTouches = 2
-		// Important: Allow our pan gesture to work alongside scrollview's?
-		// No, we want 1 finger for this pan, 2 fingers for scrollview.
-		// So they are distinct by touch count.
-		view.addGestureRecognizer(panGestureRecognizer)
-
-		let threeFingerScroll = UIPanGestureRecognizer(target: self, action: #selector(handleThreeFingerRemoteScroll(_:)))
-		threeFingerScroll.delegate = self
-		threeFingerScroll.minimumNumberOfTouches = 3
-		threeFingerScroll.maximumNumberOfTouches = 3
-		threeFingerScroll.allowedTouchTypes = [NSNumber(value: UITouch.TouchType.direct.rawValue)]
-		view.addGestureRecognizer(threeFingerScroll)
-		threeFingerScrollGestureRecognizer = threeFingerScroll
-
-		// Remove custom Pinch logic, ScrollView handles it.
-		// But we might want to know isPinching status?
-        // Let's rely on ScrollView delegate for updates.
-
-		// Add tap gesture recognizer for single-finger touch
-		let singleFingerTapGestureRecognizer = UITapGestureRecognizer(target: self, action: #selector(handleSingleFingerTap(_:)))
-		singleFingerTapGestureRecognizer.numberOfTouchesRequired = 1
-		singleFingerTapGestureRecognizer.allowedTouchTypes = [0, 2]
-		view.addGestureRecognizer(singleFingerTapGestureRecognizer)
-
-		let doubleTapGestureRecognizer = UITapGestureRecognizer(target: self, action: #selector(handleDoubleTap(_:)))
-		doubleTapGestureRecognizer.numberOfTouchesRequired = 1
-		doubleTapGestureRecognizer.numberOfTapsRequired = 2
-		doubleTapGestureRecognizer.allowedTouchTypes = [0, 2]
-		view.addGestureRecognizer(doubleTapGestureRecognizer)
-		singleFingerTapGestureRecognizer.require(toFail: doubleTapGestureRecognizer)
-
-		// Add tap gesture recognizer for two-finger touch
-		let twoFingerTapGestureRecognizer = UITapGestureRecognizer(target: self, action: #selector(handleTwoFingerTap(_:)))
-		twoFingerTapGestureRecognizer.numberOfTouchesRequired = 2
-		twoFingerTapGestureRecognizer.allowedTouchTypes = [0]
-		view.addGestureRecognizer(twoFingerTapGestureRecognizer)
-		//		view.frame = CGRect(x: 0, y: 0, width: UIScreen.main.bounds.width, height: UIScreen.main.bounds.height)
-		//		view.backgroundColor = UIColor(red: 0x66, green: 0xcc, blue: 0xff, alpha: 1.0)
-
-		let threeFingerTapGestureRecognizer = UITapGestureRecognizer(target: self, action: #selector(handleThreeFinderTap(_:)))
-		threeFingerTapGestureRecognizer.numberOfTouchesRequired = 3
-		threeFingerTapGestureRecognizer.allowedTouchTypes = [0]
-		view.addGestureRecognizer(threeFingerTapGestureRecognizer)
-
-		for direction in [UISwipeGestureRecognizer.Direction.left, .right] {
-			let swipe = UISwipeGestureRecognizer(target: self, action: #selector(handleThreeFingerDisplaySwipe(_:)))
-			swipe.direction = direction
-			swipe.numberOfTouchesRequired = 3
-			view.addGestureRecognizer(swipe)
+		// One recognizer classifies every finger gesture so taps, pointer
+		// movement, drags, scrolling and pinching never fire together.
+		// UIScrollView still performs the pinch-zoom and zoomed viewport pan.
+		let touchRecognizer = StreamTouchGestureRecognizer(target: nil, action: nil)
+		touchRecognizer.delegate = self
+		touchRecognizer.onTouches = { [weak self] phase, touches, time in
+			self?.handleStreamTouches(phase, touches, at: time)
 		}
+		touchRecognizer.onAbandon = { [weak self] ids, time in
+			guard let self else { return }
+			self.perform(self.gestureClassifier.touchesCancelled(ids, at: time))
+		}
+		view.addGestureRecognizer(touchRecognizer)
 
 		let pencilInteraction = UIPencilInteraction()
 		pencilInteraction.delegate = self
@@ -309,11 +257,6 @@ class ParsecViewController: UIViewController, UIScrollViewDelegate {
 		let pencilHover = UIHoverGestureRecognizer(target: self, action: #selector(handlePencilHover(_:)))
 		pencilHover.allowedTouchTypes = [NSNumber(value: UITouch.TouchType.pencil.rawValue)]
 		view.addGestureRecognizer(pencilHover)
-
-		let longPressGestureRecognizer = UILongPressGestureRecognizer(target: self, action: #selector(handleLongPress(_:)))
-		longPressGestureRecognizer.numberOfTouchesRequired = 1
-		longPressGestureRecognizer.allowedTouchTypes = [0, 2]
-		view.addGestureRecognizer(longPressGestureRecognizer)
 
 		NotificationCenter.default.addObserver(
 			self,
@@ -375,6 +318,11 @@ class ParsecViewController: UIViewController, UIScrollViewDelegate {
 		}
 		NotificationCenter.default.removeObserver(self, name: UIResponder.keyboardWillShowNotification, object: nil)
 		NotificationCenter.default.removeObserver(self, name: UIResponder.keyboardWillHideNotification, object: nil)
+		// Never leave the host with a held button or the local zoom locked.
+		perform(gestureClassifier.reset())
+		touchController.flushPendingRelease()
+		syncHoldTimer()
+		cancelRemoteScrollMomentum()
 	}
 	
 	
@@ -548,160 +496,129 @@ extension ParsecViewController: UIGestureRecognizerDelegate {
 		return true
 	}
 
-	func gestureRecognizerShouldBegin(_ gestureRecognizer: UIGestureRecognizer) -> Bool {
-		guard gestureRecognizer === threeFingerScrollGestureRecognizer,
-			  let pan = gestureRecognizer as? UIPanGestureRecognizer else {
-			return true
+	private func handleStreamTouches(_ phase: StreamTouchGestureRecognizer.Phase, _ touches: Set<UITouch>, at time: TimeInterval) {
+		let ids = touches.map { AnyHashable(ObjectIdentifier($0)) }
+		let samples = touches.map {
+			TouchGestureClassifier.TouchSample(id: AnyHashable(ObjectIdentifier($0)), location: $0.location(in: view))
 		}
 
-		// Leave deliberate horizontal three-finger swipes available for display
-		// switching. Vertical and diagonal movement remains remote scrolling.
-		let velocity = pan.velocity(in: view)
-		return abs(velocity.y) >= abs(velocity.x) * 0.7
-	}
-
-	@objc func handlePinchGesture(_ gestureRecognizer: UIPinchGestureRecognizer) {
-		// Pinch is handled by UIScrollView
-	}
-
-	@objc func handlePanGesture(_ gestureRecognizer: UIPanGestureRecognizer) {
-		//		print("number = \(gestureRecognizer.numberOfTouches) status = \(gestureRecognizer.state.rawValue)")
-		// lock activatedPanFingerNumber in case user not releasing both finger at the same time
-		if gestureRecognizer.numberOfTouches == 0 {
-			if gestureRecognizer.state == .ended || gestureRecognizer.state == .cancelled {
-				let completedFingerCount = activatedPanFingerNumber
-				let completedMode = twoFingerGestureMode
-				let endingVelocity = gestureRecognizer.velocity(in: gestureRecognizer.view)
-				activatedPanFingerNumber = 0
-				// Reset accumulators
-				accumulatedDeltaX = 0.0
-				accumulatedDeltaY = 0.0
-				lastPanTranslation = .zero
-				lastScrollTranslation = .zero
-				twoFingerGestureMode = .undecided
-
-				if completedFingerCount == 2 && completedMode == .remoteScroll &&
-					gestureRecognizer.state == .ended {
-					startRemoteScrollMomentum(velocity: endingVelocity)
-				}
-
-				if SettingsHandler.cursorMode == .direct {
-					let button = ParsecMouseButton.init(rawValue: 1)
-					CParsec.sendMouseClickMessage(button, false)
-				}
-				if isRemoteDragging && !SettingsHandler.dragLock {
-					CParsec.sendMouseClickMessage(ParsecMouseButton(rawValue: 1), false)
-					isRemoteDragging = false
-					dragLocked = false
-					UIImpactFeedbackGenerator(style: .light).impactOccurred()
-				}
-			}
-		} else if activatedPanFingerNumber == 2 || (gestureRecognizer.numberOfTouches == 2 && activatedPanFingerNumber == 0) {
-			activatedPanFingerNumber = 2
-			let translation = gestureRecognizer.translation(in: gestureRecognizer.view)
-			if gestureRecognizer.state == .began {
-				cancelRemoteScrollMomentum()
-				lastScrollTranslation = .zero
-				twoFingerGestureMode = scrollView.zoomScale > 1.01 ? .viewportPan : .undecided
-			}
-
-			if twoFingerGestureMode == .undecided {
-				let pinchScale = scrollView.pinchGestureRecognizer?.scale ?? 1
-				if abs(pinchScale - 1) > 0.025 {
-					twoFingerGestureMode = .zoom
-				} else if hypot(translation.x, translation.y) > 6 {
-					twoFingerGestureMode = .remoteScroll
-				}
-			}
-
-			guard twoFingerGestureMode == .remoteScroll else {
-				lastScrollTranslation = translation
-				return
-			}
-
-			let delta = CGPoint(
-				x: translation.x - lastScrollTranslation.x,
-				y: translation.y - lastScrollTranslation.y
-			)
-			lastScrollTranslation = translation
-			if abs(delta.x) > 0.2 || abs(delta.y) > 0.2 {
-				sendRemoteScroll(delta: delta)
-				return
-			}
-		} else if activatedPanFingerNumber == 1 || (gestureRecognizer.numberOfTouches == 1 && activatedPanFingerNumber == 0) {
-			if gestureRecognizer.state == .began {
-				cancelRemoteScrollMomentum()
-			}
-			activatedPanFingerNumber = 1
-			// move mouse
-			if SettingsHandler.cursorMode == .direct {
-                // Map screen tap to content coordinates
-				let position = gestureRecognizer.location(in: gestureRecognizer.view)
-                // Convert to content coordinates
-				let adjustedPosition = contentView.convert(position, from: view)
-				CParsec.sendMousePosition(Int32(adjustedPosition.x), Int32(adjustedPosition.y))
-			} else {
-				// Simple translation-based movement with sub-pixel accumulation
-				let currentTranslation = gestureRecognizer.translation(in: gestureRecognizer.view)
-
-				if gestureRecognizer.state == .began {
-					lastPanTranslation = .zero
-					accumulatedDeltaX = 0.0
-					accumulatedDeltaY = 0.0
-				}
-
-				// Calculate delta since last update
-				let rawX = Float(currentTranslation.x - lastPanTranslation.x)
-				let rawY = Float(currentTranslation.y - lastPanTranslation.y)
-				let deltaX = accelerated(rawX) * mouseSensitivity
-				let deltaY = accelerated(rawY) * mouseSensitivity
-
-				lastPanTranslation = currentTranslation
-
-				// Accumulate for sub-pixel precision
-				accumulatedDeltaX += deltaX
-				accumulatedDeltaY += deltaY
-
-				// Send movement when we have at least 1 pixel
-				let intDeltaX = Int32(accumulatedDeltaX)
-				let intDeltaY = Int32(accumulatedDeltaY)
-
-				if intDeltaX != 0 || intDeltaY != 0 {
-					CParsec.sendMouseDelta(intDeltaX, intDeltaY)
-					accumulatedDeltaX -= Float(intDeltaX)
-					accumulatedDeltaY -= Float(intDeltaY)
-				}
-			}
-
-			if gestureRecognizer.state == .began && SettingsHandler.cursorMode == .direct {
-				let button = ParsecMouseButton.init(rawValue: 1)
-				CParsec.sendMouseClickMessage(button, true)
-			}
-
-		}
-	}
-
-	@objc private func handleThreeFingerRemoteScroll(_ gestureRecognizer: UIPanGestureRecognizer) {
-		let translation = gestureRecognizer.translation(in: view)
-
-		switch gestureRecognizer.state {
+		switch phase {
 		case .began:
+			let momentumActive = scrollMomentumTimer != nil
 			cancelRemoteScrollMomentum()
-			lastScrollTranslation = .zero
-		case .changed:
-			let delta = CGPoint(
-				x: translation.x - lastScrollTranslation.x,
-				y: translation.y - lastScrollTranslation.y
-			)
-			lastScrollTranslation = translation
-			sendRemoteScroll(delta: delta)
+			perform(gestureClassifier.touchesBegan(samples, at: time, configuration: gestureConfiguration(interruptsMomentum: momentumActive)))
+		case .moved:
+			perform(gestureClassifier.touchesMoved(samples, at: time))
 		case .ended:
-			startRemoteScrollMomentum(velocity: gestureRecognizer.velocity(in: view))
-			lastScrollTranslation = .zero
-		case .cancelled, .failed:
-			lastScrollTranslation = .zero
-		default:
-			break
+			perform(gestureClassifier.touchesEnded(ids, at: time))
+		case .cancelled:
+			perform(gestureClassifier.touchesCancelled(ids, at: time))
+		}
+		syncHoldTimer()
+	}
+
+	private func gestureConfiguration(interruptsMomentum: Bool) -> TouchGestureClassifier.Configuration {
+		// Settings can change mid-session from the controls sheet.
+		mouseSensitivity = Float(SettingsHandler.mouseSensitivity)
+		pointerAccelerator.curve = SettingsHandler.pointerAcceleration
+
+		var configuration = TouchGestureClassifier.Configuration()
+		configuration.mode = SettingsHandler.cursorMode == .direct ? .direct : .trackpad
+		configuration.doubleTapToDrag = SettingsHandler.doubleTapToDrag
+		configuration.dragLock = SettingsHandler.dragLock
+		switch SettingsHandler.rightClickPosition {
+		case .firstFinger: configuration.rightClickAnchor = .firstFinger
+		case .middle: configuration.rightClickAnchor = .middle
+		case .secondFinger: configuration.rightClickAnchor = .secondFinger
+		}
+		configuration.viewportZoomed = scrollView.zoomScale > 1.01
+		configuration.interruptsMomentum = interruptsMomentum
+		return configuration
+	}
+
+	private func syncHoldTimer() {
+		guard let deadline = gestureClassifier.holdDeadline else {
+			holdTimer?.invalidate()
+			holdTimer = nil
+			scheduledHoldDeadline = nil
+			return
+		}
+		guard deadline != scheduledHoldDeadline else { return }
+
+		holdTimer?.invalidate()
+		let delay = max(0, deadline - ProcessInfo.processInfo.systemUptime)
+		let timer = Timer(timeInterval: delay, repeats: false) { [weak self] _ in
+			guard let self else { return }
+			self.holdTimer = nil
+			self.scheduledHoldDeadline = nil
+			self.perform(self.gestureClassifier.holdTimerFired(at: ProcessInfo.processInfo.systemUptime))
+			self.syncHoldTimer()
+		}
+		// Common modes keep the timer firing while UIScrollView is tracking.
+		RunLoop.main.add(timer, forMode: .common)
+		holdTimer = timer
+		scheduledHoldDeadline = deadline
+	}
+
+	private func perform(_ outputs: [TouchGestureClassifier.Output]) {
+		for output in outputs {
+			switch output {
+			case let .movePointer(dx, dy, dt, accelerate):
+				touchController.flushPendingRelease()
+				let delta = pointerAccelerator.scale(dx: dx, dy: dy, dt: dt, accelerate: accelerate)
+				sendPointerDelta(delta)
+			case .movePointerTo(let point):
+				touchController.flushPendingRelease()
+				let position = contentView.convert(point, from: view)
+				CParsec.sendMousePosition(Int32(position.x), Int32(position.y))
+			case .press(let button):
+				touchController.press(parsecButton(button))
+			case .release(let button):
+				touchController.release(parsecButton(button))
+			case let .click(button, point):
+				touchController.click(parsecButton(button), at: point.map { contentView.convert($0, from: view) })
+			case let .scroll(dx, dy):
+				sendRemoteScroll(delta: CGPoint(x: dx, y: dy))
+			case let .scrollEnded(vx, vy):
+				startRemoteScrollMomentum(velocity: CGPoint(x: vx, y: vy))
+			case .showKeyboard:
+				showKeyboard()
+			case .cycleDisplay(let direction):
+				NotificationCenter.default.post(name: .parsecCycleDisplay, object: nil, userInfo: ["direction": direction])
+				UISelectionFeedbackGenerator().selectionChanged()
+			case .lockViewport(let locked):
+				scrollView.isScrollEnabled = !locked
+				scrollView.pinchGestureRecognizer?.isEnabled = !locked
+			case .feedback(.grab):
+				UIImpactFeedbackGenerator(style: .medium).impactOccurred()
+			case .feedback(.release):
+				UIImpactFeedbackGenerator(style: .light).impactOccurred()
+			}
+		}
+		isRemoteDragging = gestureClassifier.isButtonHeld
+	}
+
+	/// Moves the cursor by a trackpad delta in screen points. Dividing by the zoom
+	/// keeps the cursor under the same on-screen finger travel when zoomed in.
+	private func sendPointerDelta(_ delta: CGVector) {
+		let zoom = Float(max(scrollView.zoomScale, 1))
+		accumulatedDeltaX += Float(delta.dx) / zoom * mouseSensitivity
+		accumulatedDeltaY += Float(delta.dy) / zoom * mouseSensitivity
+
+		// Send whole pixels and carry the remainder for sub-pixel precision.
+		let intDeltaX = Int32(accumulatedDeltaX)
+		let intDeltaY = Int32(accumulatedDeltaY)
+		if intDeltaX != 0 || intDeltaY != 0 {
+			CParsec.sendMouseDelta(intDeltaX, intDeltaY)
+			accumulatedDeltaX -= Float(intDeltaX)
+			accumulatedDeltaY -= Float(intDeltaY)
+		}
+	}
+
+	private func parsecButton(_ button: TouchGestureClassifier.MouseButton) -> ParsecMouseButton {
+		switch button {
+		case .left: return ParsecMouseButton(rawValue: 1)
+		case .right: return ParsecMouseButton(rawValue: 3)
 		}
 	}
 
@@ -754,107 +671,10 @@ extension ParsecViewController: UIGestureRecognizerDelegate {
 		scrollMomentumVelocity = .zero
 	}
 
-	@objc func handleSingleFingerTap(_ gestureRecognizer: UITapGestureRecognizer) {
-		if dragLocked {
-			dragLocked = false
-			isRemoteDragging = false
-			CParsec.sendMouseClickMessage(ParsecMouseButton(rawValue: 1), false)
-			UIImpactFeedbackGenerator(style: .light).impactOccurred()
-			return
-		}
-
-		let location = gestureRecognizer.location(in: gestureRecognizer.view)
-		let adjustedLocation = contentView.convert(location, from: view)
-		touchController.onTap(typeOfTap: 1, location: adjustedLocation)
-	}
-
-	@objc func handleDoubleTap(_ gestureRecognizer: UITapGestureRecognizer) {
-		guard SettingsHandler.doubleTapToDrag else {
-			handleSingleFingerTap(gestureRecognizer)
-			handleSingleFingerTap(gestureRecognizer)
-			return
-		}
-		let location = contentView.convert(gestureRecognizer.location(in: view), from: view)
-		CParsec.sendMousePosition(Int32(location.x), Int32(location.y))
-		CParsec.sendMouseClickMessage(ParsecMouseButton(rawValue: 1), true)
-		isRemoteDragging = true
-		dragLocked = true
-		UIImpactFeedbackGenerator(style: .medium).impactOccurred()
-	}
-
-	@objc func handleTwoFingerTap(_ gestureRecognizer: UITapGestureRecognizer) {
-
-		let location: CGPoint
-		switch SettingsHandler.rightClickPosition {
-		case .firstFinger:
-			location = gestureRecognizer.location(ofTouch: 0, in: gestureRecognizer.view)
-			case .secondFinger:
-			location = gestureRecognizer.location(ofTouch: 1, in: gestureRecognizer.view)
-		default:
-			location = gestureRecognizer.location(in: gestureRecognizer.view)
-		}
-
-		let adjustedLocation = contentView.convert(location, from: view)
-		touchController.onTap(typeOfTap: 3, location: adjustedLocation)
-	}
-
-	@objc func handleThreeFinderTap(_ gestureRecognizer: UITapGestureRecognizer) {
-		showKeyboard()
-	}
-
-	@objc func handleThreeFingerDisplaySwipe(_ gestureRecognizer: UISwipeGestureRecognizer) {
-		NotificationCenter.default.post(
-			name: .parsecCycleDisplay,
-			object: nil,
-			userInfo: ["direction": gestureRecognizer.direction == .left ? 1 : -1]
-		)
-		UISelectionFeedbackGenerator().selectionChanged()
-	}
-
 	@objc func handlePencilHover(_ gestureRecognizer: UIHoverGestureRecognizer) {
 		guard gestureRecognizer.state == .began || gestureRecognizer.state == .changed else { return }
 		let location = contentView.convert(gestureRecognizer.location(in: view), from: view)
 		CParsec.sendMousePosition(Int32(location.x), Int32(location.y))
-	}
-
-	@objc func handleLongPress(_ gestureRecognizer: UIGestureRecognizer) {
-		if SettingsHandler.cursorMode != .touchpad {
-			return
-		}
-		let button = ParsecMouseButton.init(rawValue: 1)
-
-		if gestureRecognizer.state == .began {
-			isRemoteDragging = true
-			UIImpactFeedbackGenerator(style: .medium).impactOccurred()
-			CParsec.sendMouseClickMessage(button, true)
-			let location = gestureRecognizer.location(in: gestureRecognizer.view)
-			lastLongPressPoint = contentView.convert(location, from: view)
-		} else if gestureRecognizer.state == .ended {
-			CParsec.sendMouseClickMessage(button, false)
-			isRemoteDragging = false
-			UIImpactFeedbackGenerator(style: .light).impactOccurred()
-		} else if gestureRecognizer.state == .changed {
-			let newLocation = gestureRecognizer.location(in: gestureRecognizer.view)
-            let adjustedNewLocation = contentView.convert(newLocation, from: view)
-			CParsec.sendMouseDelta(
-				Int32(Float(adjustedNewLocation.x - lastLongPressPoint.x) * mouseSensitivity),
-				Int32(Float(adjustedNewLocation.y - lastLongPressPoint.y) * mouseSensitivity)
-			)
-			lastLongPressPoint = adjustedNewLocation
-		}
-	}
-
-	private func accelerated(_ value: Float) -> Float {
-		switch SettingsHandler.pointerAcceleration {
-		case .linear:
-			return value
-		case .adaptive:
-			let factor = min(2.2, 1 + abs(value) / 18)
-			return value * factor
-		case .fast:
-			let factor = min(3.2, 1.35 + abs(value) / 12)
-			return value * factor
-		}
 	}
 
     // UIScrollViewDelegate
@@ -877,7 +697,7 @@ extension ParsecViewController: UIGestureRecognizerDelegate {
 
 	func scrollViewWillBeginZooming(_ scrollView: UIScrollView, with view: UIView?) {
 		cancelRemoteScrollMomentum()
-		twoFingerGestureMode = .zoom
+		gestureClassifier.viewportGestureBegan()
 		guard let pinch = scrollView.pinchGestureRecognizer else { return }
 		let focus = pinch.location(in: contentView)
 		pinchFocusPoint = focus

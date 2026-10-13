@@ -906,8 +906,8 @@ private struct GestureGuideView: View {
 	let onDone: () -> Void
 
 	private let gestures: [(String, String, String)] = [
-		("hand.tap.fill", "Click", "Tap once."),
-		("hand.draw.fill", "Drag", "Move the pointer onto an item, hold until it grabs, then drag."),
+		("hand.tap.fill", "Click", "Tap once. Tap twice to double-click."),
+		("hand.draw.fill", "Drag", "Trackpad: hold until it grabs, or tap and then touch again, and drag. Direct touch: drag the item."),
 		("hand.raised.fingers.spread.fill", "Right-click", "Tap with two fingers."),
 		("arrow.up.and.down", "Scroll", "At 1×, drag with two fingers. When zoomed, use two fingers to pan and three fingers to scroll."),
 		("keyboard.fill", "Keyboard", "Tap the keyboard button or tap with three fingers.")

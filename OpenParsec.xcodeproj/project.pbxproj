@@ -20,6 +20,7 @@
 		27899AC7292FE2A9001ACA33 /* audio.c in Sources */ = {isa = PBXBuildFile; fileRef = 27899AC5292FE2A9001ACA33 /* audio.c */; };
 		27A267352B1AEAB700F34C63 /* SettingsHandler.swift in Sources */ = {isa = PBXBuildFile; fileRef = 27A267342B1AEAB700F34C63 /* SettingsHandler.swift */; };
 		27A923E029E8E53000F54BDA /* TouchHandlingView.swift in Sources */ = {isa = PBXBuildFile; fileRef = 27A923DF29E8E53000F54BDA /* TouchHandlingView.swift */; };
+		5C1A7E0D2E9B4F1000A1B2C3 /* TouchGestureClassifier.swift in Sources */ = {isa = PBXBuildFile; fileRef = 5C1A7E0E2E9B4F1000A1B2C3 /* TouchGestureClassifier.swift */; };
 		27A923E229E8FEE900F54BDA /* UIViewControllerWrapper.swift in Sources */ = {isa = PBXBuildFile; fileRef = 27A923E129E8FEE900F54BDA /* UIViewControllerWrapper.swift */; };
 		27AC751829EA339B00E8CAF7 /* URLImage.swift in Sources */ = {isa = PBXBuildFile; fileRef = 27AC751729EA339B00E8CAF7 /* URLImage.swift */; };
 		27AD36602B19731800C8A607 /* ExUI.swift in Sources */ = {isa = PBXBuildFile; fileRef = 27AD365F2B19731800C8A607 /* ExUI.swift */; };
@@ -74,6 +75,7 @@
 		27899AC6292FE2A9001ACA33 /* audio.h */ = {isa = PBXFileReference; fileEncoding = 4; lastKnownFileType = sourcecode.c.h; path = audio.h; sourceTree = "<group>"; };
 		27A267342B1AEAB700F34C63 /* SettingsHandler.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = SettingsHandler.swift; sourceTree = "<group>"; };
 		27A923DF29E8E53000F54BDA /* TouchHandlingView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = TouchHandlingView.swift; sourceTree = "<group>"; };
+		5C1A7E0E2E9B4F1000A1B2C3 /* TouchGestureClassifier.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = TouchGestureClassifier.swift; sourceTree = "<group>"; };
 		27A923E129E8FEE900F54BDA /* UIViewControllerWrapper.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = UIViewControllerWrapper.swift; sourceTree = "<group>"; };
 		27AC751729EA339B00E8CAF7 /* URLImage.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = URLImage.swift; sourceTree = "<group>"; };
 		27AD365F2B19731800C8A607 /* ExUI.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ExUI.swift; sourceTree = "<group>"; };
@@ -173,6 +175,7 @@
 				274A69CE29EA07FA00F595A5 /* SettingsView.swift */,
 				FC16A7AC29A97BDA00BB70A7 /* Shared.swift */,
 				27A923DF29E8E53000F54BDA /* TouchHandlingView.swift */,
+				5C1A7E0E2E9B4F1000A1B2C3 /* TouchGestureClassifier.swift */,
 				27A923E129E8FEE900F54BDA /* UIViewControllerWrapper.swift */,
 				27AC751729EA339B00E8CAF7 /* URLImage.swift */,
 				17CD1E022BF07BC3003D2102 /* ViewContainerPatch.swift */,
@@ -292,6 +295,7 @@
 				E76224A12F8C017F00A2F86F /* ParsecBackgroundManager.swift in Sources */,
 				E762250B2F8D0A0100A2F86F /* PictureInPictureManager.swift in Sources */,
 				27A923E029E8E53000F54BDA /* TouchHandlingView.swift in Sources */,
+				5C1A7E0D2E9B4F1000A1B2C3 /* TouchGestureClassifier.swift in Sources */,
 				27E61A92292965FC00FF6563 /* AppDelegate.swift in Sources */,
 				27E61AAA2929B92200FF6563 /* MainView.swift in Sources */,
 				271D14FD292EAA3600D7F1D6 /* ParsecGLKViewController.swift in Sources */,
