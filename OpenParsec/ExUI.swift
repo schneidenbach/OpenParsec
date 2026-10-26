@@ -117,58 +117,18 @@ struct MultiPicker<SelectionValue: Hashable>: View {
 	var selection: Binding<SelectionValue>
 	var options: [Choice<SelectionValue>]
 
-	@State var showChoices: Bool = false
-	@State var valueText: String = "Choose..."
-
 	init(selection: Binding<SelectionValue>, options: [Choice<SelectionValue>]) {
 		self.selection = selection
 		self.options = options
 	}
 
 	var body: some View {
-		if #available(iOS 15, *) {
-			Picker("", selection: selection) {
-				ForEach(options.indices, id: \.self) { i in
-					Text(options[i].label).tag(options[i].value)
-				}
-			}
-			.pickerStyle(.menu)
-		} else {
-			// Dumb workaround for older iOS versions. -Angel
-			Button(action: {showChoices.toggle()}) {
-				HStack {
-					Text(valueText)
-						.multilineTextAlignment(.center)
-						.padding(.trailing, -4)
-					Image(systemName: "chevron.up.chevron.down")
-						.font(.system(size: 12))
-				}
-				.foregroundColor(Color("AccentColor"))
-			}
-			.actionSheet(isPresented: $showChoices) {
-				genActionSheet()
-			}
-			.onAppear {
-				for option in options {
-					if option.value == selection.wrappedValue {
-						valueText = option.label
-						break
-					}
-				}
+		Picker("", selection: selection) {
+			ForEach(options.indices, id: \.self) { i in
+				Text(options[i].label).tag(options[i].value)
 			}
 		}
-	}
-
-	func genActionSheet() -> ActionSheet {
-		let buttons = options.enumerated().map { _, option in
-			Alert.Button.default(Text(option.value == selection.wrappedValue ? "    \(option.label)  ✓" : option.label), action: {select(option)})
-		}
-		return ActionSheet(title: Text("Pick your preference:"), buttons: buttons + [Alert.Button.cancel()])
-	}
-
-	func select(_ option: Choice<SelectionValue>) {
-		valueText = option.label
-		selection.wrappedValue = option.value
+		.pickerStyle(.menu)
 	}
 }
 

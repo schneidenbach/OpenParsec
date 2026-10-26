@@ -31,6 +31,8 @@ class ParsecViewController: UIViewController, UIScrollViewDelegate {
 	private var scrollRemainder: CGPoint = .zero
 	private var scrollMomentumVelocity: CGPoint = .zero
 	private var scrollMomentumTimer: Timer?
+	/// The view size the stream was last fitted to.
+	private var laidOutStreamSize: CGSize = .zero
 
 	var mouseSensitivity: Float = Float(SettingsHandler.mouseSensitivity)
 
@@ -272,25 +274,51 @@ class ParsecViewController: UIViewController, UIScrollViewDelegate {
 
 	override func viewWillTransition(to size: CGSize, with coordinator: UIViewControllerTransitionCoordinator) {
 		super.viewWillTransition(to: size, with: coordinator)
-
-		let h = size.height
-		let w = size.width
-
-		// Reset zoom on rotation
-		scrollView.zoomScale = 1.0
-
-		self.glkView.updateSize(width: w, height: h)
-		contentView.frame.size = CGSize(width: w, height: h)
-		scrollView.contentSize = CGSize(width: w, height: h)
-		CParsec.setFrame(w, h, UIScreen.main.scale)
+		layoutStream(for: size)
 
 		// Rebuild after the transition finishes, when UIWindow safe-area insets
-		// reflect the Dynamic Island's new edge.
+		// reflect the cutout's new edge.
 		coordinator.animate(alongsideTransition: nil) { _ in
-			self.keyboardAccessoriesView = nil
-			if self.keyboardVisible {
-				self.reloadInputViews()
-			}
+			self.rebuildKeyboardAccessory()
+		}
+	}
+
+	override func viewDidLayoutSubviews() {
+		super.viewDidLayoutSubviews()
+		// Also catches size changes that arrive without a transition, such as the
+		// first layout or moving between a foldable's cover and inner screens.
+		if layoutStream(for: view.bounds.size) {
+			rebuildKeyboardAccessory()
+		}
+	}
+
+	/// Fits the stream, its zoom container and the SDK's frame to `size`.
+	/// Returns whether anything changed.
+	@discardableResult
+	private func layoutStream(for size: CGSize) -> Bool {
+		guard size.width > 0, size.height > 0, size != laidOutStreamSize else { return false }
+		let isResize = laidOutStreamSize != .zero
+		laidOutStreamSize = size
+
+		// Zoom is relative to the old size; start the new one at 1×.
+		if scrollView.zoomScale != 1 {
+			scrollView.setZoomScale(1, animated: false)
+		}
+		contentView.frame = CGRect(origin: .zero, size: size)
+		scrollView.contentSize = size
+		scrollView.contentOffset = .zero
+		glkView.updateSize(width: size.width, height: size.height)
+		CParsec.setFrame(size.width, size.height, view.window?.screen.nativeScale ?? traitCollection.displayScale)
+		if isResize {
+			sessionLog.info("Stream resized to \(Int(size.width))×\(Int(size.height)) pt")
+		}
+		return isResize
+	}
+
+	private func rebuildKeyboardAccessory() {
+		keyboardAccessoriesView = nil
+		if keyboardVisible {
+			reloadInputViews()
 		}
 	}
 

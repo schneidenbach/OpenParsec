@@ -42,7 +42,8 @@ class ParsecGLKViewController: ParsecPlayground {
 	}
 
 	public func viewDidLoad() {
-		glkView = GLKView(frame: CGRect(x: 0, y: 0, width: UIScreen.main.bounds.width, height: UIScreen.main.bounds.height))
+		// ParsecViewController refits this to its real bounds on every layout pass.
+		glkView = GLKView(frame: viewController.view.bounds)
 		baseContentScale = viewController.view.window?.screen.nativeScale ?? UIScreen.main.nativeScale
 		glkView.contentScaleFactor = baseContentScale
 		glkRenderer = ParsecGLKRenderer(glkView, glkViewController, updateImage)
@@ -80,6 +81,11 @@ class ParsecGLKViewController: ParsecPlayground {
 	func updateSize(width: CGFloat, height: CGFloat) {
 		glkView.frame.size.width = width
 		glkView.frame.size.height = height
+		// The new size may be on a different screen (e.g. a foldable's inner display).
+		if let screen = viewController.view.window?.screen {
+			baseContentScale = screen.nativeScale
+			glkView.contentScaleFactor = baseContentScale
+		}
 	}
 
 	func updateRenderScale(_ zoomScale: CGFloat) {
