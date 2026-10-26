@@ -76,7 +76,7 @@ struct SettingsView: View {
 				} header: {
 					Label("Controls", systemImage: "hand.draw")
 				} footer: {
-					Text("At 1×, scroll with two fingers. When zoomed, two fingers pan the view and three fingers scroll the remote computer.")
+					Text("Two fingers scroll the remote computer and pinch to zoom. When zoomed, the view follows the pointer; drag with three fingers to pan it.")
 				}
 
 				Section {

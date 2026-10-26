@@ -5,26 +5,46 @@ enum ViewType {
 	case main
 	case parsec
 	case test
+
+	/// Navigation depth: moving to a deeper screen pushes, moving up pops.
+	var depth: Int {
+		switch self {
+		case .login: return 0
+		case .main, .test: return 1
+		case .parsec: return 2
+		}
+	}
 }
 
 struct ContentView: View {
 	@State var curView: ViewType = .login
+	@State private var isNavigatingBack = false
 
-	let defaultTransition = AnyTransition.move(edge: .trailing)
+	/// Push slides the new screen in from the trailing edge; pop reverses it so
+	/// returning from a session reads as going back, not deeper.
+	private var pageTransition: AnyTransition {
+		.asymmetric(
+			insertion: .move(edge: isNavigatingBack ? .leading : .trailing),
+			removal: .move(edge: isNavigatingBack ? .trailing : .leading)
+		)
+	}
 
 	var body: some View {
 		ZStack {
 			switch curView {
-				case .login:
-					LoginView(self)
-				case .main:
-					MainView(self)
-						.transition(defaultTransition)
-				case .parsec:
-					ParsecView(self)
+			case .login:
+				LoginView(self)
+					.transition(pageTransition)
+			case .main:
+				MainView(self)
+					.transition(pageTransition)
+			case .parsec:
+				ParsecView(self)
+					.transition(pageTransition)
 			case .test:
 				TestView(self)
-			 }
+					.transition(pageTransition)
+			}
 		}
 		.onAppear(perform: initApp)
 		.onOpenURL { url in
@@ -72,7 +92,13 @@ struct ContentView: View {
 	}
 
 	public func setView(_ t: ViewType) {
-		withAnimation(.easeInOut) { curView = t }
+		guard t != curView else { return }
+		// SwiftUI animates a removed view with the transition from its last
+		// render, so commit the direction before switching screens.
+		isNavigatingBack = t.depth < curView.depth
+		DispatchQueue.main.async {
+			withAnimation(.easeInOut(duration: 0.32)) { curView = t }
+		}
 	}
 }
 

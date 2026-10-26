@@ -499,6 +499,7 @@ struct MainView: View {
 		SessionContext.shared.peerID = who.id
 		SessionContext.shared.hostName = who.hostname
 		CParsec.initialize()
+		SessionAudio.beginSession()
 		connectingToName = who.hostname
 		withAnimation { isConnecting = true }
 

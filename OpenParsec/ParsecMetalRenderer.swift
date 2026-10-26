@@ -29,6 +29,7 @@ final class ParsecMetalRenderer: NSObject, MTKViewDelegate {
 			: SettingsHandler.preferredFramesPerSecond
 		let timeout = UInt32(max(1000 / max(fps, 1), 8))
 		CParsec.renderMetalFrame(commandQueue: commandQueue, target: texture, timeout: timeout)
+		StreamVideoPauser.shared.frameDrawn()
 
 		if #available(iOS 15.0, *) {
 			PictureInPictureManager.shared.captureMetalFrame(

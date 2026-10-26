@@ -73,6 +73,7 @@ struct ParsecStatusBar: View {
 		let status = CParsec.getStatusEx(&pcs)
 
 		if status != PARSEC_OK {
+			sessionLog.error("Session status \(status.rawValue) (app state \(UIApplication.shared.applicationState.rawValue), video paused \(StreamVideoPauser.shared.isVideoPaused))")
 			if ParsecBackgroundManager.shared.isMarkedForReconnect {
 				return
 			}
@@ -217,7 +218,8 @@ struct ParsecView: View {
 		self.controller = controller
 
 		let save = SettingsHandler.saveSessionSettings
-		_muted = State(initialValue: save ? SettingsHandler.savedMuted : false)
+		// SessionAudio chose this when connecting (muted if other audio was playing).
+		_muted = State(initialValue: SessionAudio.isMuted)
 		_zoomEnabled = State(initialValue: true)
 		_constantFps = State(initialValue: save ? SettingsHandler.savedConstantFps : false)
 		_prefer444 = State(initialValue: SettingsHandler.prefer444)
@@ -583,7 +585,8 @@ struct ParsecView: View {
 		}
 
 		CParsec.applyConfig()
-		CParsec.setMuted(muted)
+		SessionAudio.setMuted(muted)
+		StreamVideoPauser.shared.start()
 		zoomEnabled = true
 		parsecViewController.setZoomEnabled(true)
 
@@ -623,7 +626,7 @@ struct ParsecView: View {
 
 	func toggleMute() {
 		muted.toggle()
-		CParsec.setMuted(muted)
+		SessionAudio.setMuted(muted)
 		if SettingsHandler.saveSessionSettings { SettingsHandler.savedMuted = muted }
 	}
 
@@ -657,6 +660,7 @@ struct ParsecView: View {
 			ParsecBackgroundManager.shared.disableAutoReconnect()
 		}
 
+		StreamVideoPauser.shared.stop()
 		if #available(iOS 15.0, *) {
 			PictureInPictureManager.shared.teardown()
 		}
@@ -909,7 +913,8 @@ private struct GestureGuideView: View {
 		("hand.tap.fill", "Click", "Tap once. Tap twice to double-click."),
 		("hand.draw.fill", "Drag", "Trackpad: hold until it grabs, or tap and then touch again, and drag. Direct touch: drag the item."),
 		("hand.raised.fingers.spread.fill", "Right-click", "Tap with two fingers."),
-		("arrow.up.and.down", "Scroll", "At 1×, drag with two fingers. When zoomed, use two fingers to pan and three fingers to scroll."),
+		("arrow.up.and.down", "Scroll", "Drag with two fingers, zoomed in or not."),
+		("arrow.up.left.and.down.right.magnifyingglass", "Zoom", "Pinch to zoom. The view follows the pointer; drag with three fingers to pan it."),
 		("keyboard.fill", "Keyboard", "Tap the keyboard button or tap with three fingers.")
 	]
 

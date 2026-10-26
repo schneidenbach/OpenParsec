@@ -38,9 +38,10 @@ final class TouchGestureClassifier {
 		var doubleTapToDrag = true
 		var dragLock = false
 		var rightClickAnchor: RightClickAnchor = .firstFinger
-		/// When zoomed in, two fingers pan and zoom the local viewport instead of
-		/// scrolling the host.
-		var viewportZoomed = false
+		/// When the local view can pan (zoomed in, or the keyboard is covering part
+		/// of it), a three-finger drag pans it instead of scrolling the host or
+		/// switching displays. Two fingers always scroll the host.
+		var viewportPannable = false
 		/// A touch that stops remote scroll momentum should not also click.
 		var interruptsMomentum = false
 	}
@@ -60,7 +61,9 @@ final class TouchGestureClassifier {
 		case showKeyboard
 		/// 1 for a leftward swipe, -1 for a rightward swipe.
 		case cycleDisplay(Int)
-		/// Suspends the local pinch and viewport pan while the host is scrolling.
+		/// Pans the zoomed local viewport by a finger delta in view points.
+		case panViewport(dx: CGFloat, dy: CGFloat)
+		/// Suspends the local pinch-zoom while fingers scroll the host or pan.
 		case lockViewport(Bool)
 		case feedback(Feedback)
 	}
@@ -108,8 +111,10 @@ final class TouchGestureClassifier {
 		case drag(DragKind)
 		case scroll
 		case swipe(fired: Bool)
-		/// Pinch-zoom or zoomed two-finger pan, both owned by the UIScrollView.
+		/// Pinch-zoom, owned by the UIScrollView.
 		case viewport
+		/// Zoomed three-finger pan of the local viewport.
+		case viewportPan
 		/// Finished or unrecognized; wait for every finger to lift.
 		case ignored
 	}
@@ -189,7 +194,7 @@ final class TouchGestureClassifier {
 			} else {
 				rebaseline(at: time)
 			}
-		case .pointer, .drag, .scroll:
+		case .pointer, .drag, .scroll, .viewportPan:
 			// The finger count changed mid-gesture: end what was happening and
 			// classify the new finger set from scratch, but never as a tap.
 			outputs += abandonDrag()
@@ -240,6 +245,13 @@ final class TouchGestureClassifier {
 			guard delta.dx != 0 || delta.dy != 0 else { return [] }
 			return [.scroll(dx: delta.dx, dy: delta.dy)]
 
+		case .viewportPan:
+			let centroid = currentCentroid()
+			let delta = CGVector(dx: centroid.x - lastCentroid.x, dy: centroid.y - lastCentroid.y)
+			lastCentroid = centroid
+			guard delta.dx != 0 || delta.dy != 0 else { return [] }
+			return [.panViewport(dx: delta.dx, dy: delta.dy)]
+
 		case .swipe(fired: false):
 			return fireSwipeIfFarEnough()
 
@@ -276,6 +288,10 @@ final class TouchGestureClassifier {
 			if touches.isEmpty, let velocity = scrollEndVelocity {
 				outputs.append(.scrollEnded(vx: velocity.dx, vy: velocity.dy))
 			}
+
+		case .viewportPan:
+			// The centroid jumps once a finger lifts; stop panning.
+			phase = .ignored
 
 		case .pointer, .drag, .swipe, .viewport, .ignored, .idle:
 			break
@@ -387,12 +403,6 @@ final class TouchGestureClassifier {
 			return startOneFingerMotion(touch, at: time)
 
 		case 2:
-			if config.viewportZoomed {
-				if displacement > Tuning.tapSlop {
-					phase = .viewport
-				}
-				return []
-			}
 			if abs(currentSpread() - baselineSpread) > Tuning.pinchSlop {
 				phase = .viewport
 				return []
@@ -406,6 +416,16 @@ final class TouchGestureClassifier {
 			let dx = centroid.x - baselineCentroid.x
 			let dy = centroid.y - baselineCentroid.y
 			guard hypot(dx, dy) > Tuning.threeFingerSlop else { return [] }
+			if config.viewportPannable {
+				phase = .viewportPan
+				lastCentroid = centroid
+				var outputs: [Output] = [.panViewport(dx: dx, dy: dy)]
+				if !viewportLocked {
+					viewportLocked = true
+					outputs.insert(.lockViewport(true), at: 0)
+				}
+				return outputs
+			}
 			if abs(dx) > abs(dy) * Tuning.swipeDominance {
 				phase = .swipe(fired: false)
 				return fireSwipeIfFarEnough()

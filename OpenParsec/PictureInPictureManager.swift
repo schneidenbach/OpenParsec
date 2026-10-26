@@ -76,8 +76,9 @@ class PictureInPictureManager: NSObject {
 	}
 
 	private func setupController(sourceView: UIView) {
-		try? AVAudioSession.sharedInstance().setCategory(.playback, mode: .default)
-		try? AVAudioSession.sharedInstance().setActive(true)
+		// Keep the session's mute-aware category; forcing exclusive playback here
+		// would pause the user's music at session start.
+		SessionAudio.configureSession()
 
 		let layer = AVSampleBufferDisplayLayer()
 		layer.videoGravity = .resizeAspect

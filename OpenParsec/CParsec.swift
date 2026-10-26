@@ -146,6 +146,7 @@ protocol ParsecService {
 	func renderGLFrame(timeout: UInt32)
 	func renderMetalFrame(commandQueue: MTLCommandQueue, target: MTLTexture, timeout: UInt32)
 	func setMuted(_ muted: Bool)
+	@discardableResult func setVideoPaused(_ paused: Bool) -> ParsecStatus
 	func applyConfig()
 	func sendMouseMessage(_ button: ParsecMouseButton, _ x: Int32, _ y: Int32, _ pressed: Bool)
 	func sendMouseClickMessage(_ button: ParsecMouseButton, _ pressed: Bool)
@@ -222,6 +223,12 @@ class CParsec {
 
 	static func setMuted(_ muted: Bool) {
 		parsecImpl.setMuted(muted)
+	}
+
+	/// Asks the host to pause or resume video; audio keeps flowing.
+	@discardableResult
+	static func setVideoPaused(_ paused: Bool) -> ParsecStatus {
+		parsecImpl.setVideoPaused(paused)
 	}
 
 	static func applyConfig() {

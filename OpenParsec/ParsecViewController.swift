@@ -181,14 +181,10 @@ class ParsecViewController: UIViewController, UIScrollViewDelegate {
 		scrollView.decelerationRate = .fast
 		scrollView.isDirectionalLockEnabled = true
 		scrollView.autoresizingMask = [.flexibleWidth, .flexibleHeight]
-		scrollView.panGestureRecognizer.minimumNumberOfTouches = 2
-		scrollView.panGestureRecognizer.maximumNumberOfTouches = 2
-        /*
-         We set minimumNumberOfTouches to 2 for the scroll view's pan gesture
-         so that 1-finger drags are passed through to our custom gesture recognizers
-         (for moving the mouse).
-         Standard 2-finger pan will scroll the view.
-         */
+		// The scroll view only zooms. Two fingers always scroll the host, so its
+		// own pan is off; when zoomed, the viewport follows the cursor and a
+		// three-finger drag pans it (see TouchGestureClassifier).
+		scrollView.panGestureRecognizer.isEnabled = false
 		view.addSubview(scrollView)
 
         // ContentView
@@ -531,7 +527,7 @@ extension ParsecViewController: UIGestureRecognizerDelegate {
 		case .middle: configuration.rightClickAnchor = .middle
 		case .secondFinger: configuration.rightClickAnchor = .secondFinger
 		}
-		configuration.viewportZoomed = scrollView.zoomScale > 1.01
+		configuration.viewportPannable = scrollView.zoomScale > 1.01 || (keyboardVisible && scrollView.contentInset.bottom > 0)
 		configuration.interruptsMomentum = interruptsMomentum
 		return configuration
 	}
@@ -586,8 +582,9 @@ extension ParsecViewController: UIGestureRecognizerDelegate {
 			case .cycleDisplay(let direction):
 				NotificationCenter.default.post(name: .parsecCycleDisplay, object: nil, userInfo: ["direction": direction])
 				UISelectionFeedbackGenerator().selectionChanged()
+			case let .panViewport(dx, dy):
+				panViewport(by: CGPoint(x: dx, y: dy))
 			case .lockViewport(let locked):
-				scrollView.isScrollEnabled = !locked
 				scrollView.pinchGestureRecognizer?.isEnabled = !locked
 			case .feedback(.grab):
 				UIImpactFeedbackGenerator(style: .medium).impactOccurred()
@@ -596,6 +593,18 @@ extension ParsecViewController: UIGestureRecognizerDelegate {
 			}
 		}
 		isRemoteDragging = gestureClassifier.isButtonHeld
+	}
+
+	/// Moves the zoomed content with the fingers, clamped to the scrollable range.
+	private func panViewport(by delta: CGPoint) {
+		let inset = scrollView.contentInset
+		let maxX = max(-inset.left, scrollView.contentSize.width - scrollView.bounds.width + inset.right)
+		let maxY = max(-inset.top, scrollView.contentSize.height - scrollView.bounds.height + inset.bottom)
+		let target = CGPoint(
+			x: min(max(scrollView.contentOffset.x - delta.x, -inset.left), maxX),
+			y: min(max(scrollView.contentOffset.y - delta.y, -inset.top), maxY)
+		)
+		scrollView.setContentOffset(target, animated: false)
 	}
 
 	/// Moves the cursor by a trackpad delta in screen points. Dividing by the zoom

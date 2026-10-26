@@ -43,6 +43,7 @@ class ParsecGLKRenderer: NSObject, GLKViewDelegate, GLKViewControllerDelegate {
 		let timeout = UInt32(max(1000 / fps, 8)) // minimum 8ms for 120Hz
 
 		CParsec.renderGLFrame(timeout: timeout)
+		StreamVideoPauser.shared.frameDrawn()
 
 		if #available(iOS 15.0, *) {
 			PictureInPictureManager.shared.captureFrame(

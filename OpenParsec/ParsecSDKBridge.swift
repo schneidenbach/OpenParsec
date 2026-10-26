@@ -290,6 +290,11 @@ class ParsecSDKBridge: ParsecService {
 		audio_mute(muted, _audioPtr)
 	}
 
+	@discardableResult
+	func setVideoPaused(_ paused: Bool) -> ParsecStatus {
+		ParsecClientPause(_parsec, paused, false)
+	}
+
 	func applyConfig() {
 
 		var parsecClientCfg = ParsecClientConfig()
