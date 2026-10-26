@@ -41,6 +41,8 @@ class ParsecViewController: UIViewController, UIScrollViewDelegate {
 	var keyboardVisible: Bool = false
 	var onKeyboardVisibilityChanged: ((Bool) -> Void)?
 	var onZoomScaleChanged: ((CGFloat) -> Void)?
+	/// The stream was refitted to a new view size in points, at the given screen scale.
+	var onStreamResized: ((CGSize, CGFloat) -> Void)?
 	private var pinchFocusPoint: CGPoint?
 	var scrollView: UIScrollView!
 	var contentView: UIView!
@@ -308,9 +310,11 @@ class ParsecViewController: UIViewController, UIScrollViewDelegate {
 		scrollView.contentSize = size
 		scrollView.contentOffset = .zero
 		glkView.updateSize(width: size.width, height: size.height)
-		CParsec.setFrame(size.width, size.height, view.window?.screen.nativeScale ?? traitCollection.displayScale)
+		let scale = view.window?.screen.nativeScale ?? traitCollection.displayScale
+		CParsec.setFrame(size.width, size.height, scale)
 		if isResize {
 			sessionLog.info("Stream resized to \(Int(size.width))×\(Int(size.height)) pt")
+			onStreamResized?(size, scale)
 		}
 		return isResize
 	}

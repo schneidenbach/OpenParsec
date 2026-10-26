@@ -187,8 +187,10 @@ struct ParsecView: View {
 	@State private var adaptiveQualityWorkItem: DispatchWorkItem?
 	@State private var adaptiveBaseResolution: CGSize?
 	@State private var adaptiveBaseBitrate: Int?
+	@State private var screenFollowWorkItem: DispatchWorkItem?
 	@AppStorage("didShowGestureGuideV2") private var didShowGestureGuide: Bool = false
 	@AppStorage("cursorMode") private var cursorMode: CursorMode = .touchpad
+	@AppStorage("followScreenChanges") private var followScreenChanges: Bool = true
 
 	@State var showKeyboard: Bool = false
 	@State var zoomEnabled: Bool = false
@@ -448,6 +450,10 @@ struct ParsecView: View {
 						}
 					}
 
+					if SettingsHandler.resolution == .client {
+						Toggle("Follow screen changes", isOn: $followScreenChanges)
+					}
+
 					Picker("Bitrate", selection: Binding(
 						get: { dataModel.bitrate },
 						set: { changeBitRate(bitrate: $0) }
@@ -610,6 +616,9 @@ struct ParsecView: View {
 		parsecViewController.onZoomScaleChanged = { scale in
 			scheduleAdaptiveQuality(for: scale)
 		}
+		parsecViewController.onStreamResized = { size, scale in
+			followScreenChange(to: size, scale: scale)
+		}
 
 		parsecViewController.setKeyboardVisible(showKeyboard)
 
@@ -662,6 +671,7 @@ struct ParsecView: View {
 		}
 
 		StreamVideoPauser.shared.stop()
+		screenFollowWorkItem?.cancel()
 		if #available(iOS 15.0, *) {
 			PictureInPictureManager.shared.teardown()
 		}
@@ -718,6 +728,33 @@ struct ParsecView: View {
 			parsecViewController.scrollView.setZoomScale(1, animated: true)
 			if SettingsHandler.saveSessionSettings { SettingsHandler.savedZoomEnabled = true }
 		}
+	}
+
+	/// With Client Resolution and "Follow screen changes" on, asks the host to
+	/// match the new screen's native pixels once a fold, unfold or rotation settles.
+	func followScreenChange(to size: CGSize, scale: CGFloat) {
+		screenFollowWorkItem?.cancel()
+		guard SettingsHandler.resolution == .client, SettingsHandler.followScreenChanges else { return }
+
+		// The resize reset zoom to 1×; skip the pending zoom-quality update and
+		// rebuild its baseline from the new resolution.
+		adaptiveQualityWorkItem?.cancel()
+		adaptiveBaseResolution = nil
+		adaptiveBaseBitrate = nil
+
+		let workItem = DispatchWorkItem {
+			let width = Int(size.width * scale) & ~1
+			let height = Int(size.height * scale) & ~1
+			ParsecResolution.updateClientResolution(width: width, height: height)
+			guard DataManager.model.resolutionX != width || DataManager.model.resolutionY != height else { return }
+			DataManager.model.resolutionX = width
+			DataManager.model.resolutionY = height
+			CParsec.updateHostVideoConfig()
+			sessionLog.info("Following screen change: requested \(width)×\(height) from host")
+		}
+		screenFollowWorkItem = workItem
+		// Let the fold or rotation finish so a quick back-and-forth sends one request.
+		DispatchQueue.main.asyncAfter(deadline: .now() + 0.8, execute: workItem)
 	}
 
 	func scheduleAdaptiveQuality(for zoomScale: CGFloat) {

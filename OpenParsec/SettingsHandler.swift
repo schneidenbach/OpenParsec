@@ -4,6 +4,9 @@ import SwiftUI
 struct SettingsHandler {
 	@AppStorage("renderer") public static var renderer: RendererType = .opengl
 	@AppStorage("resolution") public static var resolution: ParsecResolution = .client
+	/// With Client Resolution, re-match the host when the stream's screen changes
+	/// size (folding or unfolding, rotating). May rearrange windows on the host.
+	@AppStorage("followScreenChanges") public static var followScreenChanges: Bool = true
 	@AppStorage("bitrate") public static var bitrate: Int = 0
 	@AppStorage("decoder") public static var decoder: DecoderPref = .h264
 	@AppStorage("cursorMode") public static var cursorMode: CursorMode = .touchpad

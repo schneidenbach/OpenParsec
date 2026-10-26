@@ -4,6 +4,7 @@ struct SettingsView: View {
 	@Binding var visible: Bool
 
 	@AppStorage("resolution") var resolution: ParsecResolution = .client
+	@AppStorage("followScreenChanges") var followScreenChanges: Bool = true
 	@AppStorage("bitrate") var bitrate: Int = 0
 	@AppStorage("decoder") var decoder: DecoderPref = .h264
 	@AppStorage("cursorMode") var cursorMode: CursorMode = .touchpad
@@ -88,6 +89,10 @@ struct SettingsView: View {
 						}
 					}
 
+					if resolution == .client {
+						Toggle("Follow screen changes", isOn: $followScreenChanges)
+					}
+
 					Picker("Decoder", selection: $decoder) {
 						Text("H.264").tag(DecoderPref.h264)
 						Text("Prefer H.265").tag(DecoderPref.h265)
@@ -105,7 +110,7 @@ struct SettingsView: View {
 				} header: {
 					Label("Streaming", systemImage: "display")
 				} footer: {
-					Text("Try compatibility mode if video stutters or fails to decode.")
+					Text("Follow screen changes re-matches the computer's resolution when you fold, unfold or rotate during a session; this can rearrange its windows. Try compatibility mode if video stutters or fails to decode.")
 				}
 
 				Section {
