@@ -214,6 +214,7 @@ class ParsecSDKBridge: ParsecService {
 				let videoConfig = config.video[0]
 
 				DispatchQueue.main.async {
+					sessionLog.info("Host video config: \(videoConfig.resolutionX)×\(videoConfig.resolutionY)")
 					DataManager.model.resolutionX = videoConfig.resolutionX
 					DataManager.model.resolutionY = videoConfig.resolutionY
 					DataManager.model.bitrate = videoConfig.encoderMaxBitrate

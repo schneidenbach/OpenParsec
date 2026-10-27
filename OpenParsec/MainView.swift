@@ -214,7 +214,7 @@ struct MainView: View {
 		} else {
 			ScrollView {
 				LazyVGrid(
-					columns: [GridItem(.adaptive(minimum: 280, maximum: 440), spacing: 16)],
+					columns: [GridItem(.adaptive(minimum: 340, maximum: 600), spacing: 16)],
 					spacing: 16
 				) {
 					ForEach(hosts) { host in
@@ -611,25 +611,27 @@ private struct ComputerCard: View {
 					.foregroundStyle(.primary)
 					.lineLimit(1)
 
-				Text("\(host.user.name)#\(host.user.id)")
+				Text(verbatim: "\(host.user.name)#\(host.user.id)")
 					.font(.subheadline)
 					.foregroundStyle(.secondary)
 					.lineLimit(1)
 
-				HStack(spacing: 6) {
-					Circle()
-						.fill(host.connections > 0 ? Color.orange : Color.green)
-						.frame(width: 7, height: 7)
-					Text(host.connections > 0 ? "\(host.connections) connected" : "Ready")
-						.font(.caption)
-						.foregroundStyle(.secondary)
-
-					Text("·")
-						.foregroundStyle(.tertiary)
-					Label(profile.kind.label, systemImage: profile.kind.systemImage)
-						.font(.caption)
-						.foregroundStyle(.secondary)
+				// One line when it fits, otherwise the profile drops below the
+				// status rather than breaking words.
+				ViewThatFits(in: .horizontal) {
+					HStack(spacing: 6) {
+						status
+						Text("·")
+							.foregroundStyle(.tertiary)
+						profileLabel
+					}
+					VStack(alignment: .leading, spacing: 3) {
+						status
+						profileLabel
+					}
 				}
+				.font(.caption)
+				.foregroundStyle(.secondary)
 			}
 
 			Spacer(minLength: 8)
@@ -647,6 +649,23 @@ private struct ComputerCard: View {
 			RoundedRectangle(cornerRadius: 22, style: .continuous)
 				.stroke(.white.opacity(0.08))
 		}
+	}
+
+	private var status: some View {
+		HStack(spacing: 6) {
+			Circle()
+				.fill(host.connections > 0 ? Color.orange : Color.green)
+				.frame(width: 7, height: 7)
+			Text(host.connections > 0 ? "\(host.connections) connected" : "Ready")
+		}
+		.lineLimit(1)
+		.fixedSize()
+	}
+
+	private var profileLabel: some View {
+		Label(profile.kind.label, systemImage: profile.kind.systemImage)
+			.lineLimit(1)
+			.fixedSize()
 	}
 }
 
@@ -675,7 +694,7 @@ private struct PersonRow: View {
 			VStack(alignment: .leading, spacing: 2) {
 				Text(user.username)
 					.font(.body.weight(.medium))
-				Text("#\(user.id)")
+				Text(verbatim: "#\(user.id)")
 					.font(.caption)
 					.foregroundStyle(.secondary)
 			}

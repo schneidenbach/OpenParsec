@@ -3,7 +3,45 @@ import AVFoundation
 import os
 
 /// Session lifecycle log. View with Console.app or `log stream --predicate 'subsystem == "com.spencer.OpenParsec"'`.
-let sessionLog = Logger(subsystem: "com.spencer.OpenParsec", category: "session")
+let sessionLog = SessionLog()
+
+/// Writes to the unified log and to `Library/Caches/session.log`, which can be
+/// copied off a device without root (`devicectl device copy from --domain-type appDataContainer`).
+struct SessionLog {
+	private static let logger = Logger(subsystem: "com.spencer.OpenParsec", category: "session")
+	private static let queue = DispatchQueue(label: "com.spencer.OpenParsec.sessionlog")
+	private static let fileURL = FileManager.default.urls(for: .cachesDirectory, in: .userDomainMask)[0]
+		.appendingPathComponent("session.log")
+	private static let maxFileSize = 512 * 1024
+
+	func info(_ message: String) {
+		Self.logger.info("\(message, privacy: .public)")
+		Self.append("INFO  " + message)
+	}
+
+	func error(_ message: String) {
+		Self.logger.error("\(message, privacy: .public)")
+		Self.append("ERROR " + message)
+	}
+
+	private static func append(_ line: String) {
+		let stamp = Date().formatted(.iso8601.time(includingFractionalSeconds: true))
+		let data = Data("\(stamp) \(line)\n".utf8)
+		queue.async {
+			let size = (try? FileManager.default.attributesOfItem(atPath: fileURL.path)[.size] as? Int) ?? 0
+			if size > maxFileSize {
+				try? FileManager.default.removeItem(at: fileURL)
+			}
+			if let handle = try? FileHandle(forWritingTo: fileURL) {
+				handle.seekToEndOfFile()
+				handle.write(data)
+				try? handle.close()
+			} else {
+				try? data.write(to: fileURL)
+			}
+		}
+	}
+}
 
 class ParsecBackgroundManager {
 	static let shared = ParsecBackgroundManager()

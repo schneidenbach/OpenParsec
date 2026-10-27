@@ -734,7 +734,10 @@ struct ParsecView: View {
 	/// match the new screen's native pixels once a fold, unfold or rotation settles.
 	func followScreenChange(to size: CGSize, scale: CGFloat) {
 		screenFollowWorkItem?.cancel()
-		guard SettingsHandler.resolution == .client, SettingsHandler.followScreenChanges else { return }
+		guard SettingsHandler.resolution == .client, SettingsHandler.followScreenChanges else {
+			sessionLog.info("Not following screen change (resolution \(SettingsHandler.resolution.rawValue), follow \(SettingsHandler.followScreenChanges))")
+			return
+		}
 
 		// The resize reset zoom to 1×; skip the pending zoom-quality update and
 		// rebuild its baseline from the new resolution.
@@ -746,7 +749,10 @@ struct ParsecView: View {
 			let width = Int(size.width * scale) & ~1
 			let height = Int(size.height * scale) & ~1
 			ParsecResolution.updateClientResolution(width: width, height: height)
-			guard DataManager.model.resolutionX != width || DataManager.model.resolutionY != height else { return }
+			guard DataManager.model.resolutionX != width || DataManager.model.resolutionY != height else {
+				sessionLog.info("Screen change kept \(width)×\(height); host already at that resolution")
+				return
+			}
 			DataManager.model.resolutionX = width
 			DataManager.model.resolutionY = height
 			CParsec.updateHostVideoConfig()

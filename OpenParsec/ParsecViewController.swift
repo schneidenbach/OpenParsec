@@ -312,8 +312,9 @@ class ParsecViewController: UIViewController, UIScrollViewDelegate {
 		glkView.updateSize(width: size.width, height: size.height)
 		let scale = view.window?.screen.nativeScale ?? traitCollection.displayScale
 		CParsec.setFrame(size.width, size.height, scale)
+		let screenPixels = view.window.map { "\(Int($0.screen.nativeBounds.width))×\(Int($0.screen.nativeBounds.height)) px screen" } ?? "no window"
+		sessionLog.info("Stream \(isResize ? "resized" : "laid out") to \(Int(size.width))×\(Int(size.height)) pt @\(scale)x on \(screenPixels)")
 		if isResize {
-			sessionLog.info("Stream resized to \(Int(size.width))×\(Int(size.height)) pt")
 			onStreamResized?(size, scale)
 		}
 		return isResize
